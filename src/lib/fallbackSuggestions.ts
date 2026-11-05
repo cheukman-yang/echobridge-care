@@ -1,124 +1,107 @@
-import { SuggestionItem } from '@/types/websocket';
+import { SuggestionItem } from '../types/websocket';
 
 export type ConversationPhase = 'reception' | 'negotiation' | 'confirmation';
 
-/**
- * ’Ê˜bƒtƒF[ƒY‚²‚Æ‚ÌÃ“IƒtƒH[ƒ‹ƒoƒbƒNƒeƒ“ƒvƒŒ[ƒg«‘
- * SRE•ûj: ‰¹º’Ê˜b‚Ì’¾–ÙŒÀŠEi1.5•bj‚ğ€ç‚µAAPI’x‰„‚Å‚àŒˆ’è˜_“I‚É‰ï˜b‚ğ‘Oi‚³‚¹‚é
- */
-const FALLBACK_TEMPLATES = {
-  reception: [
+export const FALLBACK_TEMPLATES: Record<
+  ConversationPhase,
+  (param?: string) => [SuggestionItem, SuggestionItem, SuggestionItem]
+> = {
+  reception: () => [
     {
       id: 'fb_rec_1',
-      label: '‚Í‚¢A‰f‚Ì—\–ñŠó–]‚Å‚·',
-      speech_text: '‚Í‚¢A‰f‚Ì—\–ñ‚ğ‚¨Šè‚¢‚¢‚½‚µ‚Ü‚·B',
-      intent: 'accept' as const,
+      label: 'åˆè¨ºã®äºˆç´„å¸Œæœ›',
+      speech_text: 'åˆã‚ã¦å—è¨ºã—ãŸã„ã®ã§ã™ãŒã€äºˆç´„ã‚’ãŠé¡˜ã„ã§ãã¾ã™ã§ã—ã‚‡ã†ã‹ã€‚',
+      intent: 'general',
       is_fallback: true,
     },
     {
       id: 'fb_rec_2',
-      label: 'óf‚É‚Â‚¢‚Ä‘Š’k‚µ‚½‚¢',
-      speech_text: 'óf‚É‚Â‚¢‚Ä‚²‘Š’k‚³‚¹‚Ä‚¢‚½‚¾‚¯‚Ü‚·‚Å‚µ‚å‚¤‚©B',
-      intent: 'general' as const,
+      label: 'å†è¨ºãƒ»ã„ã¤ç©ºã„ã¦ã„ã‚‹ã‹ç¢ºèª',
+      speech_text: 'è¨ºå¯Ÿåˆ¸ã‚’æŒã£ã¦ã„ã¾ã™ã€‚ä»Šé€±ã§äºˆç´„å¯èƒ½ãªç©ºãæ ã¯ã‚ã‚Šã¾ã™ã‹ï¼Ÿ',
+      intent: 'general',
       is_fallback: true,
     },
     {
       id: 'fb_rec_3',
-      label: '­XŠm”F‚³‚¹‚Ä‚­‚¾‚³‚¢',
-      speech_text: '­XŠm”F‚³‚¹‚Ä‚¢‚½‚¾‚¯‚Ü‚·‚Å‚µ‚å‚¤‚©B',
-      intent: 'general' as const,
+      label: 'è¨ºç™‚ç§‘ãƒ»æ‹…å½“åŒ»ã®ç›¸è«‡',
+      speech_text: 'ç—‡çŠ¶ã«ã¤ã„ã¦ã”ç›¸è«‡ã—ãŸã„ã®ã§ã™ãŒã€æœ¬æ—¥ã¯è¨ºå¯Ÿã‚’å—ã‘ã‚‰ã‚Œã¾ã™ã‹ï¼Ÿ',
+      intent: 'general',
       is_fallback: true,
     },
   ],
-  negotiation: (nextFreeSlot: string) => [
+  negotiation: (nextFreeSlot: string = '15:00') => [
     {
       id: 'fb_neg_1',
-      label: `${nextFreeSlot}ˆÈ~‚È‚çf‚¦‚Ü‚·`,
-      speech_text: `‚»‚ÌŠÔ‚Í“s‡‚ª‚Â‚©‚È‚¢‚½‚ßA${nextFreeSlot}ˆÈ~‚Å‚¨Šè‚¢‚Å‚«‚Ü‚·‚Å‚µ‚å‚¤‚©B`,
-      intent: 'counter_offer' as const,
+      label: 'ãã®æ™‚é–“ã§ãŠé¡˜ã„ã—ã¾ã™ (å—è«¾)',
+      speech_text: 'ã¯ã„ã€ãã®æ™‚é–“ã§ã‚ˆã‚ã—ããŠé¡˜ã„ã„ãŸã—ã¾ã™ã€‚',
+      intent: 'accept',
       is_fallback: true,
     },
     {
       id: 'fb_neg_2',
-      label: '•Ê‚Ì—j“ú‚Å‚¨Šè‚¢‚µ‚Ü‚·',
-      speech_text: '\‚µ–ó‚²‚´‚¢‚Ü‚¹‚ñA•Ê‚Ì—j“ú‚Å’²®‚¢‚½‚¾‚­‚±‚Æ‚Í‰Â”\‚Å‚µ‚å‚¤‚©B',
-      intent: 'decline' as const,
+      label: 'åˆ¥ã®æ™‚é–“å¸¯ã‚’å¸Œæœ› (é€†ææ¡ˆ)',
+      speech_text: `ã‚ã„ã«ããã®æ™‚é–“ã¯éƒ½åˆãŒæ‚ªãã€${nextFreeSlot}ä»¥é™ã®æ ã¯ç©ºã„ã¦ã„ã¾ã™ã§ã—ã‚‡ã†ã‹ï¼Ÿ`,
+      intent: 'counter_offer',
       is_fallback: true,
     },
     {
       id: 'fb_neg_3',
-      label: 'Œß‘O’†‚Í‹ó‚¢‚Ä‚¢‚Ü‚·‚©',
-      speech_text: 'Œß‘O’†‚Ì‚¨ŠÔ‘Ñ‚Å‚µ‚½‚ç‹ó‚¢‚Ä‚¨‚è‚Ü‚·‚Å‚µ‚å‚¤‚©B',
-      intent: 'counter_offer' as const,
+      label: 'åˆ¥ã®æ—¥ç¨‹ã‚’æ¤œè¨ (è¾é€€)',
+      speech_text: 'ç”³ã—è¨³ã‚ã‚Šã¾ã›ã‚“ã€ãã®æ—¥ã¯é›£ã—ã„ã®ã§åˆ¥ã®æ—¥ç¨‹ã‚’æ¡ˆå†…ã—ã¦ã„ãŸã ã‘ã¾ã™ã‹ï¼Ÿ',
+      intent: 'decline',
       is_fallback: true,
     },
   ],
-  confirmation: [
+  confirmation: () => [
     {
-      id: 'fb_cnf_1',
-      label: '³’m‚µ‚Ü‚µ‚½i—\–ñŠm’èj',
-      speech_text: '³’m‚¢‚½‚µ‚Ü‚µ‚½B“–“ú‚Í‚æ‚ë‚µ‚­‚¨Šè‚¢‚¢‚½‚µ‚Ü‚·B',
-      intent: 'accept' as const,
+      id: 'fb_conf_1',
+      label: 'å¾©å”±ã—ã¦ç¢ºå®š (äº†è§£)',
+      speech_text: 'æ‰¿çŸ¥ã„ãŸã—ã¾ã—ãŸã€‚å½“æ—¥ã¯ä¿é™ºè¨¼ã¨ãŠè–¬æ‰‹å¸³ã‚’æŒå‚ã—ã¦10åˆ†å‰ã«ä¼ºã„ã¾ã™ã€‚',
+      intent: 'accept',
       is_fallback: true,
     },
     {
-      id: 'fb_cnf_2',
-      label: '‚¿•¨‚ğÄŠm”F‚µ‚½‚¢',
-      speech_text: '“–“ú‚Ì‚¿•¨‚É‚Â‚¢‚ÄA‚à‚¤ˆê“xŠm”F‚³‚¹‚Ä‚¢‚½‚¾‚¯‚Ü‚·‚Å‚µ‚å‚¤‚©B',
-      intent: 'general' as const,
+      id: 'fb_conf_2',
+      label: 'äº‹å‰å•è¨ºã‚„æŒã¡ç‰©ã®å†ç¢ºèª',
+      speech_text: 'åˆè¨ºå•è¨ºç¥¨ã¯äº‹å‰ã«WEBã§å›ç­”å¯èƒ½ã§ã—ã‚‡ã†ã‹ï¼Ÿ',
+      intent: 'general',
       is_fallback: true,
     },
     {
-      id: 'fb_cnf_3',
-      label: '‚ ‚è‚ª‚Æ‚¤‚²‚´‚¢‚Ü‚µ‚½',
-      speech_text: '‚²‘Î‰‚¢‚½‚¾‚«‚ ‚è‚ª‚Æ‚¤‚²‚´‚¢‚Ü‚µ‚½B¸—ç‚¢‚½‚µ‚Ü‚·B',
-      intent: 'general' as const,
+      id: 'fb_conf_3',
+      label: 'ãŠç¤¼ã‚’è¨€ã£ã¦é€šè©±ã‚’çµ‚ãˆã‚‹',
+      speech_text: 'ä¸å¯§ã«ã”å¯¾å¿œã„ãŸã ãã‚ã‚ŠãŒã¨ã†ã”ã–ã„ã¾ã—ãŸã€‚å¤±ç¤¼ã„ãŸã—ã¾ã™ã€‚',
+      intent: 'general',
       is_fallback: true,
     },
   ],
 };
 
-/**
- * STT•¶š‹N‚±‚µƒeƒLƒXƒg‚¨‚æ‚Ñ’Ê˜bƒ^[ƒ“”‚©‚ç‰ï˜bƒtƒF[ƒY‚ğ„’è‚·‚éŒy—ÊƒXƒe[ƒgƒ}ƒVƒ“
- *
- * @param transcript ’¼‹ß‚Ì‘Šè‘¤Šm’è”­˜bƒeƒLƒXƒg
- * @param turnCount Œ»İ‚Ì‰ï˜bƒ^[ƒ“” (1ŠJn)
- */
 export function detectConversationPhase(transcript: string, turnCount: number): ConversationPhase {
-  // 1. ³‹K•\Œ»‚É‚æ‚éƒL[ƒ[ƒh‘¦ŒŸ’m
-  if (/(—\–ñ|‰f|‚²—pŒ|‚¨“d˜b‚ ‚è‚ª‚Æ‚¤‚²‚´‚¢‚Ü‚·|‚Ç‚¤‚³‚ê‚Ü‚µ‚½)/.test(transcript)) {
-    return 'reception';
-  }
-  if (/(\d+Œ|\d+“ú|\d+|—ˆT|‰Î—j|…—j|–Ø—j|‹à—j|“y—j|‹ó‚¢‚Ä|‚¢‚©‚ª)/.test(transcript)) {
-    return 'negotiation';
-  }
-  if (/(‚©‚µ‚±‚Ü‚è‚Ü‚µ‚½|³’m|‚¨æ‚è‚µ‚Ü‚·|‚¨‘Ò‚¿‚µ‚Ä|•ÛŒ¯Ø|‚¨‘å–‚É)/.test(transcript)) {
+  // ã‚¿ãƒ¼ãƒ³æ•°ã¾ãŸã¯ç¢ºå®šã‚­ãƒ¼ãƒ¯ãƒ¼ãƒ‰ã‚’æœ€å„ªå…ˆ
+  if (turnCount >= 3 || /(ãŠå–ã‚Š|ç¢ºå®š|ä¿é™ºè¨¼|ãŠè–¬æ‰‹å¸³|ãŠè¶Šã—|ãŠå¾…ã¡ã—ã¦|ãŠå¤§äº‹ã«)/.test(transcript)) {
     return 'confirmation';
   }
+  if (/(\d+æœˆ|\d+æ—¥|\d+æ™‚|æ¥é€±|ç«æ›œ|æ°´æ›œ|æœ¨æ›œ|é‡‘æ›œ|åœŸæ›œ|ç©ºã„ã¦|ã„ã‹ãŒ)/.test(transcript)) {
+    return 'negotiation';
+  }
+  if (/(äºˆç´„|åˆè¨º|ã”ç”¨ä»¶|ãŠé›»è©±ã‚ã‚ŠãŒã¨ã†ã”ã–ã„ã¾ã™|ã©ã†ã•ã‚Œã¾ã—ãŸ)/.test(transcript)) {
+    return 'reception';
+  }
 
-  // 2. ƒL[ƒ[ƒh–¢ŒŸo‚Ìƒ^[ƒ“”ƒtƒH[ƒ‹ƒoƒbƒN
   if (turnCount <= 1) return 'reception';
   if (turnCount === 2) return 'negotiation';
   return 'confirmation';
 }
 
-/**
- * 1.2•bƒT[ƒLƒbƒgƒuƒŒ[ƒJ[”­“®‚ÉŒÄ‚Ño‚·Ã“I3‘ğ¶¬ŠÖ”
- *
- * @param transcript ’¼‹ß‚Ì‘Šè‘¤Šm’èƒeƒLƒXƒg
- * @param turnCount Œ»İ‚Ìƒ^[ƒ“”
- * @param nextFreeSlot ƒJƒŒƒ“ƒ_[ƒLƒƒƒbƒVƒ…‚©‚çæ“¾‚µ‚½’¼‹ß‚Ì‹ó‚«ŠÔiƒfƒtƒHƒ‹ƒg: 15:00j
- */
 export function generateCircuitBreakerSuggestions(
   transcript: string,
   turnCount: number,
-  nextFreeSlot: string = '15'
+  nextFreeSlot: string = '15:00'
 ): [SuggestionItem, SuggestionItem, SuggestionItem] {
   const phase = detectConversationPhase(transcript, turnCount);
-
   if (phase === 'negotiation') {
-    return FALLBACK_TEMPLATES.negotiation(nextFreeSlot) as [SuggestionItem, SuggestionItem, SuggestionItem];
+    return FALLBACK_TEMPLATES.negotiation(nextFreeSlot);
   }
-
-  return FALLBACK_TEMPLATES[phase] as [SuggestionItem, SuggestionItem, SuggestionItem];
+  return FALLBACK_TEMPLATES[phase]();
 }

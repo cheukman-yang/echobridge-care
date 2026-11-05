@@ -49,7 +49,7 @@ server.register(async (fastifyInstance) => {
               } as ServerWsMessage)
             );
 
-            // 初期サジェスト提示
+            // 初期サジェスト（受付フェーズ）
             const initialSuggestions = generateCircuitBreakerSuggestions('', turnCount);
             socket.send(
               JSON.stringify({
@@ -64,34 +64,33 @@ server.register(async (fastifyInstance) => {
             break;
 
           case 'AUDIO_CHUNK':
-            // 16kHz PCM 音声チャンク受信（本番 STT ストリーム pipe 用）
             break;
 
           case 'USER_SPEECH_REQUEST':
             turnCount += 1;
-            // 1.2秒サーキットブレーカーの起動
             if (fallbackTimer) clearTimeout(fallbackTimer);
 
-            fallbackTimer = setTimeout(() => {
-              const fallbackItems = generateCircuitBreakerSuggestions(msg.payload.text, turnCount);
-              const fallbackPayload: GeminiSuggestionResponse = {
-                detected_intent: 'fallback_timeout',
-                confidence_score: 0.5,
-                suggestions: fallbackItems,
-              };
-              socket.send(
-                JSON.stringify({
-                  type: 'AI_SUGGESTIONS',
-                  payload: fallbackPayload,
-                } as ServerWsMessage)
-              );
-            }, 1200);
-
-            // 医院側の返答シミュレーション（モック動作）
+            // 医院側のシナリオ遷移レスポンス
             setTimeout(() => {
               if (fallbackTimer) clearTimeout(fallbackTimer);
 
-              const mockReply = '承知いたしました。来週火曜日の14時はいかがでしょうか？';
+              let mockReply = '';
+              let intent = 'negotiation';
+
+              if (turnCount === 2) {
+                // 初回発話後: 日時を提示
+                mockReply = '承知いたしました。来週火曜日の14時はいかがでしょうか？';
+                intent = 'negotiation';
+              } else if (turnCount === 3) {
+                // 日時合意後: 予約確定と持ち物案内
+                mockReply = 'かしこまりました。11月10日火曜日の14時でお取りいたしました。当日は保険証とお薬手帳をご持参のうえ、10分前にお越しください。';
+                intent = 'confirmation';
+              } else {
+                // 終了確認
+                mockReply = '他にご不明点はございますでしょうか？なければお電話を切らせていただきます。';
+                intent = 'closing';
+              }
+
               socket.send(
                 JSON.stringify({
                   type: 'STT_TRANSCRIPT',
@@ -100,14 +99,16 @@ server.register(async (fastifyInstance) => {
               );
 
               const suggestions = generateCircuitBreakerSuggestions(mockReply, turnCount);
+              const payload: GeminiSuggestionResponse = {
+                detected_intent: intent,
+                confidence_score: 0.95,
+                suggestions,
+              };
+
               socket.send(
                 JSON.stringify({
                   type: 'AI_SUGGESTIONS',
-                  payload: {
-                    detected_intent: 'negotiation',
-                    confidence_score: 0.95,
-                    suggestions,
-                  },
+                  payload,
                 } as ServerWsMessage)
               );
             }, 600);
@@ -123,9 +124,9 @@ server.register(async (fastifyInstance) => {
                   appointment_date: '2026-11-10',
                   appointment_time: '14:00',
                   department: '内科',
-                  items_to_bring: ['保険証', 'お薬手帳'],
-                  notes: '予約時間の10分前にお越しください。',
-                  raw_transcript_summary: '初診予約の受付完了。11月10日14時枠で確定。',
+                  items_to_bring: ['健康保険証 / マイナ保険証', 'お薬手帳'],
+                  notes: '初診のため問診票記入あり。予約時間の10分前に来院。',
+                  raw_transcript_summary: '来週火曜（11/10）14:00の内科初診予約が完了。持ち物と来院時間を案内済み。',
                 },
               } as ServerWsMessage)
             );
