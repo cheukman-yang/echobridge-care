@@ -1,62 +1,48 @@
 import { z } from 'zod';
 
-/**
- * 3‘ğƒTƒWƒFƒXƒgi“®“I¶¬‚¨‚æ‚ÑÃ“IƒtƒH[ƒ‹ƒoƒbƒN‹¤’Êj
- */
 export const SuggestionItemSchema = z.object({
-  id: z.string().describe('‘I‘ğˆ‚ÌˆêˆÓ‚ÈID (—á: opt_1, fb_1)'),
-  label: z.string().describe('‰æ–Êƒ{ƒ^ƒ“‚É•\¦‚·‚é—v–ñƒeƒLƒXƒg (30•¶šˆÈ“à)'),
-  speech_text: z.string().describe('TTS‚ÅÀÛ‚É‘Šè‘¤‚Ö“Ç‚İã‚°‚é’š”JŒêƒeƒLƒXƒg'),
-  intent: z.enum(['accept', 'decline', 'counter_offer', 'general']).describe('”­˜b‚ÌˆÓ}•ª—Ş'),
-  is_fallback: z.boolean().default(false).describe('1.2sƒT[ƒLƒbƒgƒuƒŒ[ƒJ[“™‚É‚æ‚éƒtƒH[ƒ‹ƒoƒbƒN¶¬‚©”Û‚©'),
+  id: z.string().describe('é¸æŠè‚¢ã®ä¸€æ„ãªID (ä¾‹: opt_1, fb_1)'),
+  label: z.string().describe('ç”»é¢ãƒœã‚¿ãƒ³ã«è¡¨ç¤ºã™ã‚‹è¦ç´„ãƒ†ã‚­ã‚¹ãƒˆ (30æ–‡å­—ä»¥å†…)'),
+  speech_text: z.string().describe('TTSã§å®Ÿéš›ã«ç›¸æ‰‹å´ã¸èª­ã¿ä¸Šã’ã‚‹ä¸å¯§èªãƒ†ã‚­ã‚¹ãƒˆ'),
+  intent: z.enum(['accept', 'decline', 'counter_offer', 'general']).describe('ç™ºè©±ã®æ„å›³åˆ†é¡'),
+  is_fallback: z.boolean().default(false).describe('1.2sã‚µãƒ¼ã‚­ãƒƒãƒˆãƒ–ãƒ¬ãƒ¼ã‚«ãƒ¼ç­‰ã«ã‚ˆã‚‹ãƒ•ã‚©ãƒ¼ãƒ«ãƒãƒƒã‚¯ç”Ÿæˆã‹å¦ã‹'),
 });
 
 export type SuggestionItem = z.infer<typeof SuggestionItemSchema>;
 
-/**
- * Gemini 1.5 Flash ‚©‚ç•Ô‹p‚³‚ê‚é3‘ğƒTƒWƒFƒXƒg‚Ìo—ÍƒXƒL[ƒ}
- */
 export const GeminiSuggestionResponseSchema = z.object({
-  detected_intent: z.string().describe('‘Šè‚Ì”­˜b‚©‚ç“Ç‚İæ‚Á‚½ˆÓ}'),
-  confidence_score: z.number().min(0).max(1).describe('„˜_‚ÌM—Š“xƒXƒRƒA'),
+  detected_intent: z.string().describe('ç›¸æ‰‹ã®ç™ºè©±ã‹ã‚‰èª­ã¿å–ã£ãŸæ„å›³'),
+  confidence_score: z.number().min(0).max(1).describe('æ¨è«–ã®ä¿¡é ¼åº¦ã‚¹ã‚³ã‚¢'),
   suggestions: z.tuple([
     SuggestionItemSchema,
     SuggestionItemSchema,
     SuggestionItemSchema,
-  ]).describe('•K‚¸Œµ–§‚É3‚Â‚Ì‘I‘ğˆ‚ğo—Í'),
+  ]).describe('å¿…ãšå³å¯†ã«3ã¤ã®é¸æŠè‚¢ã‚’å‡ºåŠ›'),
 });
 
 export type GeminiSuggestionResponse = z.infer<typeof GeminiSuggestionResponseSchema>;
 
-/**
- * ’Ê˜bI—¹Œã‚ÌƒJƒ‹ƒeŒ`®—v–ñiGemini 1.5 Pro o—Íj
- */
 export const MedicalSummarySchema = z.object({
-  clinic_name: z.string().describe('ófæƒNƒŠƒjƒbƒN–¼'),
-  appointment_date: z.string().describe('—\–ñ“ú (YYYY-MM-DD)'),
-  appointment_time: z.string().describe('—\–ñŠÔ (HH:mm)'),
-  department: z.string().optional().describe('f—Ã‰È'),
-  items_to_bring: z.array(z.string()).describe('“–“ú‚Ì‚¿•¨ˆê—— (•ÛŒ¯ØAf@Œ”‚È‚Ç)'),
-  notes: z.string().describe('“Á‹L–€E’ˆÓ–€'),
-  raw_transcript_summary: z.string().describe('’Ê˜b‘S‘Ì‚Ì—v–ñ•¶'),
+  clinic_name: z.string().describe('å—è¨ºå…ˆã‚¯ãƒªãƒ‹ãƒƒã‚¯å'),
+  appointment_date: z.string().describe('äºˆç´„æ—¥ (YYYY-MM-DD)'),
+  appointment_time: z.string().describe('äºˆç´„æ™‚é–“ (HH:mm)'),
+  department: z.string().optional().describe('è¨ºç™‚ç§‘'),
+  items_to_bring: z.array(z.string()).describe('å½“æ—¥ã®æŒã¡ç‰©ä¸€è¦§ (ä¿é™ºè¨¼ã€è¨ºå¯Ÿåˆ¸ãªã©)'),
+  notes: z.string().describe('ç‰¹è¨˜äº‹é …ãƒ»æ³¨æ„äº‹é …'),
+  raw_transcript_summary: z.string().describe('é€šè©±å…¨ä½“ã®è¦ç´„æ–‡'),
 });
 
 export type MedicalSummary = z.infer<typeof MedicalSummarySchema>;
 
-/**
- * WebSocket ƒNƒ‰ƒCƒAƒ“ƒg -> ƒT[ƒo[ ƒƒbƒZ[ƒWƒXƒL[ƒ}
- */
 export const ClientWsMessageSchema = z.discriminatedUnion('type', [
-  // ’Ê˜bƒZƒbƒVƒ‡ƒ“ŠJn
   z.object({
     type: z.literal('SESSION_START'),
     payload: z.object({
       callId: z.string(),
-      targetClinic: z.string().default('‚Ğ‚Ü‚í‚èˆã‰@'),
+      targetClinic: z.string().default('ã²ã¾ã‚ã‚ŠåŒ»é™¢'),
       calendarId: z.string().optional(),
     }),
   }),
-  // ‰¹ºƒXƒgƒŠ[ƒ€ (16kHz PCM Int16Array ‚Ì Base64)
   z.object({
     type: z.literal('AUDIO_CHUNK'),
     payload: z.object({
@@ -64,7 +50,6 @@ export const ClientWsMessageSchema = z.discriminatedUnion('type', [
       sequence: z.number(),
     }),
   }),
-  // ƒ†[ƒU[‚ª‘I‘ğˆ‚ğƒ^ƒbƒv‚Ü‚½‚Í©—R“ü—Í‚ğ‘—M
   z.object({
     type: z.literal('USER_SPEECH_REQUEST'),
     payload: z.object({
@@ -72,14 +57,12 @@ export const ClientWsMessageSchema = z.discriminatedUnion('type', [
       isCustomInput: z.boolean().default(false),
     }),
   }),
-  // ’Ê˜bI—¹
   z.object({
     type: z.literal('SESSION_END'),
     payload: z.object({
       reason: z.enum(['completed', 'canceled', 'hangup']),
     }),
   }),
-  // Ú‘±ˆÛƒn[ƒgƒr[ƒg
   z.object({
     type: z.literal('PING'),
   }),
@@ -87,11 +70,7 @@ export const ClientWsMessageSchema = z.discriminatedUnion('type', [
 
 export type ClientWsMessage = z.infer<typeof ClientWsMessageSchema>;
 
-/**
- * WebSocket ƒT[ƒo[ -> ƒNƒ‰ƒCƒAƒ“ƒg ƒƒbƒZ[ƒWƒXƒL[ƒ}
- */
 export const ServerWsMessageSchema = z.discriminatedUnion('type', [
-  // STT •¶š‹N‚±‚µŒ‹‰Êi’†ŠÔ‚Ü‚½‚ÍŠm’èj
   z.object({
     type: z.literal('STT_TRANSCRIPT'),
     payload: z.object({
@@ -100,12 +79,10 @@ export const ServerWsMessageSchema = z.discriminatedUnion('type', [
       confidence: z.number().optional(),
     }),
   }),
-  // AI ƒŠƒAƒ‹ƒ^ƒCƒ€ƒTƒWƒFƒXƒg’ñ¦
   z.object({
     type: z.literal('AI_SUGGESTIONS'),
     payload: GeminiSuggestionResponseSchema,
   }),
-  // ”­˜b‰¹ºi‘Šè‚Ü‚½‚Í©•ª‚ÌTTS‡¬‰¹ºƒoƒCƒiƒŠj
   z.object({
     type: z.literal('TTS_AUDIO_PLAY'),
     payload: z.object({
@@ -114,12 +91,10 @@ export const ServerWsMessageSchema = z.discriminatedUnion('type', [
       text: z.string(),
     }),
   }),
-  // ’Ê˜bI—¹‚ÌÅIƒJƒ‹ƒe—v–ñ
   z.object({
     type: z.literal('CALL_SUMMARY'),
     payload: MedicalSummarySchema,
   }),
-  // ƒJƒŒƒ“ƒ_[“o˜^Š®—¹’Ê’m
   z.object({
     type: z.literal('CALENDAR_SYNCED'),
     payload: z.object({
@@ -129,11 +104,9 @@ export const ServerWsMessageSchema = z.discriminatedUnion('type', [
       end: z.string(),
     }),
   }),
-  // Ú‘±ˆÛƒn[ƒgƒr[ƒg‰“š
   z.object({
     type: z.literal('PONG'),
   }),
-  // ƒGƒ‰[’Ê’m
   z.object({
     type: z.literal('ERROR'),
     payload: z.object({

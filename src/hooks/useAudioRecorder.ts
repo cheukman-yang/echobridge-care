@@ -30,7 +30,6 @@ export function useAudioRecorder({ onAudioChunk }: UseAudioRecorderOptions) {
       const audioCtx = new AudioContextClass();
       audioContextRef.current = audioCtx;
 
-      // public/audio-processor.js ÇÃÉçÅ[Éh
       await audioCtx.audioWorklet.addModule('/audio-processor.js');
 
       const sourceNode = audioCtx.createMediaStreamSource(stream);

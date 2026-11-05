@@ -16,11 +16,11 @@ const PORT = Number(process.env.PORT) || 8080;
 server.register(websocket);
 
 server.register(async (fastifyInstance) => {
-  fastifyInstance.get('/ws/call', { websocket: true }, (connection) => {
+  fastifyInstance.get('/ws/call', { websocket: true }, (socket) => {
     let turnCount = 0;
     let fallbackTimer: NodeJS.Timeout | null = null;
 
-    connection.socket.on('message', async (rawMessage: Buffer) => {
+    socket.on('message', async (rawMessage: Buffer) => {
       try {
         const parsed = JSON.parse(rawMessage.toString());
         const result = ClientWsMessageSchema.safeParse(parsed);
@@ -30,7 +30,7 @@ server.register(async (fastifyInstance) => {
             type: 'ERROR',
             payload: { code: 'INVALID_PAYLOAD', message: result.error.message, fatal: false },
           };
-          connection.socket.send(JSON.stringify(errMsg));
+          socket.send(JSON.stringify(errMsg));
           return;
         }
 
@@ -39,19 +39,19 @@ server.register(async (fastifyInstance) => {
         switch (msg.type) {
           case 'SESSION_START':
             turnCount = 1;
-            connection.socket.send(
+            socket.send(
               JSON.stringify({
                 type: 'STT_TRANSCRIPT',
                 payload: {
-                  text: `${msg.payload.targetClinic}‚Å‚²‚´‚¢‚Ü‚·B‚²—pŒ‚ð‚¨Žf‚¢‚¢‚½‚µ‚Ü‚·B`,
+                  text: `${msg.payload.targetClinic}ã§ã”ã–ã„ã¾ã™ã€‚ã”ç”¨ä»¶ã‚’ãŠä¼ºã„ã„ãŸã—ã¾ã™ã€‚`,
                   isFinal: true,
                 },
               } as ServerWsMessage)
             );
 
-            // ‰ŠúƒTƒWƒFƒXƒg’ñŽ¦
+            // åˆæœŸã‚µã‚¸ã‚§ã‚¹ãƒˆæç¤º
             const initialSuggestions = generateCircuitBreakerSuggestions('', turnCount);
-            connection.socket.send(
+            socket.send(
               JSON.stringify({
                 type: 'AI_SUGGESTIONS',
                 payload: {
@@ -64,12 +64,12 @@ server.register(async (fastifyInstance) => {
             break;
 
           case 'AUDIO_CHUNK':
-            // 16kHz PCM ‰¹ºƒ`ƒƒƒ“ƒNŽóMi–{”ÔŽž‚Í STT ƒXƒgƒŠ[ƒ€‚Ö pipej
+            // 16kHz PCM éŸ³å£°ãƒãƒ£ãƒ³ã‚¯å—ä¿¡ï¼ˆæœ¬ç•ª STT ã‚¹ãƒˆãƒªãƒ¼ãƒ  pipe ç”¨ï¼‰
             break;
 
           case 'USER_SPEECH_REQUEST':
             turnCount += 1;
-            // 1.2•bƒT[ƒLƒbƒgƒuƒŒ[ƒJ[‚Ì‹N“®
+            // 1.2ç§’ã‚µãƒ¼ã‚­ãƒƒãƒˆãƒ–ãƒ¬ãƒ¼ã‚«ãƒ¼ã®èµ·å‹•
             if (fallbackTimer) clearTimeout(fallbackTimer);
 
             fallbackTimer = setTimeout(() => {
@@ -79,7 +79,7 @@ server.register(async (fastifyInstance) => {
                 confidence_score: 0.5,
                 suggestions: fallbackItems,
               };
-              connection.socket.send(
+              socket.send(
                 JSON.stringify({
                   type: 'AI_SUGGESTIONS',
                   payload: fallbackPayload,
@@ -87,12 +87,12 @@ server.register(async (fastifyInstance) => {
               );
             }, 1200);
 
-            // ‘ŠŽè‘¤‚Ì•Ô“šƒVƒ~ƒ…ƒŒ[ƒVƒ‡ƒ“iƒ‚ƒbƒN“®ìj
+            // åŒ»é™¢å´ã®è¿”ç­”ã‚·ãƒŸãƒ¥ãƒ¬ãƒ¼ã‚·ãƒ§ãƒ³ï¼ˆãƒ¢ãƒƒã‚¯å‹•ä½œï¼‰
             setTimeout(() => {
               if (fallbackTimer) clearTimeout(fallbackTimer);
 
-              const mockReply = '³’m‚¢‚½‚µ‚Ü‚µ‚½B—ˆT‰Î—j“ú‚Ì14Žž‚Í‚¢‚©‚ª‚Å‚µ‚å‚¤‚©H';
-              connection.socket.send(
+              const mockReply = 'æ‰¿çŸ¥ã„ãŸã—ã¾ã—ãŸã€‚æ¥é€±ç«æ›œæ—¥ã®14æ™‚ã¯ã„ã‹ãŒã§ã—ã‚‡ã†ã‹ï¼Ÿ';
+              socket.send(
                 JSON.stringify({
                   type: 'STT_TRANSCRIPT',
                   payload: { text: mockReply, isFinal: true },
@@ -100,7 +100,7 @@ server.register(async (fastifyInstance) => {
               );
 
               const suggestions = generateCircuitBreakerSuggestions(mockReply, turnCount);
-              connection.socket.send(
+              socket.send(
                 JSON.stringify({
                   type: 'AI_SUGGESTIONS',
                   payload: {
@@ -115,28 +115,28 @@ server.register(async (fastifyInstance) => {
 
           case 'SESSION_END':
             if (fallbackTimer) clearTimeout(fallbackTimer);
-            connection.socket.send(
+            socket.send(
               JSON.stringify({
                 type: 'CALL_SUMMARY',
                 payload: {
-                  clinic_name: '‚Ð‚Ü‚í‚èˆã‰@',
+                  clinic_name: 'ã²ã¾ã‚ã‚ŠåŒ»é™¢',
                   appointment_date: '2026-11-10',
                   appointment_time: '14:00',
-                  department: '“à‰È',
-                  items_to_bring: ['•ÛŒ¯Ø', '‚¨–òŽè’ '],
-                  notes: '—\–ñŽžŠÔ‚Ì10•ª‘O‚É‚¨‰z‚µ‚­‚¾‚³‚¢B',
-                  raw_transcript_summary: '‰f—\–ñ‚ÌŽó•tŠ®—¹B11ŒŽ10“ú14Žž˜g‚ÅŠm’èB',
+                  department: 'å†…ç§‘',
+                  items_to_bring: ['ä¿é™ºè¨¼', 'ãŠè–¬æ‰‹å¸³'],
+                  notes: 'äºˆç´„æ™‚é–“ã®10åˆ†å‰ã«ãŠè¶Šã—ãã ã•ã„ã€‚',
+                  raw_transcript_summary: 'åˆè¨ºäºˆç´„ã®å—ä»˜å®Œäº†ã€‚11æœˆ10æ—¥14æ™‚æž ã§ç¢ºå®šã€‚',
                 },
               } as ServerWsMessage)
             );
             break;
 
           case 'PING':
-            connection.socket.send(JSON.stringify({ type: 'PONG' } as ServerWsMessage));
+            socket.send(JSON.stringify({ type: 'PONG' } as ServerWsMessage));
             break;
         }
       } catch (err) {
-        connection.socket.send(
+        socket.send(
           JSON.stringify({
             type: 'ERROR',
             payload: { code: 'PARSE_ERROR', message: 'Invalid JSON', fatal: false },
@@ -145,7 +145,7 @@ server.register(async (fastifyInstance) => {
       }
     });
 
-    connection.socket.on('close', () => {
+    socket.on('close', () => {
       if (fallbackTimer) clearTimeout(fallbackTimer);
     });
   });
