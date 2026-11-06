@@ -17,6 +17,7 @@ const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 let currentHospitalTranscript = '';
 let currentPatientIntent = '';
 let callHistory: { sender: string; text: string }[] = [];
+let isHospitalRecording = false;
 
 const broadcast = (data: any) => {
   const msg = typeof data === 'string' ? data : JSON.stringify(data);
@@ -28,36 +29,51 @@ const broadcast = (data: any) => {
 };
 
 const brushUpText = async (rawText: string): Promise<string> => {
-  const trimmed = rawText.trim();
+  const cleaned = rawText.trim().replace(/[。、！？.!?]+$/, '');
+  const lower = cleaned.toLowerCase();
+
   const dict: { [key: string]: string } = {
+    'はい': 'はい、よろしくお願いいたします。',
     'わかった': '承知いたしました。',
     'わかりました': '承知いたしました。',
     '了解': '承知いたしました。',
     '了解です': '承知いたしました。',
+    'ok': 'かしこまりました。そちらでお願いいたします。',
+    'okです': 'かしこまりました。そちらでお願いいたします。',
+    'okay': 'かしこまりました。そちらでお願いいたします。',
+    'okayです': 'かしこまりました。そちらでお願いいたします。',
+    'おけ': 'かしこまりました。そちらでお願いいたします。',
+    'yes': 'はい、そちらでお願いいたします。',
+    'yesです': 'はい、そちらでお願いいたします。',
+    'yep': 'はい、そちらでお願いいたします。',
+    'いいえ': 'いいえ、そちらは都合が合いません。',
+    'no': 'いいえ、そちらは都合が合いません。',
+    'noです': 'いいえ、そちらは都合が合いません。',
+    'nope': 'いいえ、そちらは都合が合いません。',
+    'ない': '特にございません。',
+    'ないです': '特にございません。',
     'ありがとう': 'ありがとうございます。',
     'ありがとうございます': 'ありがとうございます。',
+    'ありがとうございました': 'ありがとうございました。失礼いたします。',
+    'thanks': 'ありがとうございます。よろしくお願いいたします。',
+    'thank you': 'ありがとうございます。よろしくお願いいたします。',
     '大丈夫': '問題ございません。大丈夫です。',
-    '大丈夫です': '問題ございません。大丈夫です。',
-    'OK': 'かしこまりました。そちらでお願いいたします。',
-    'OKです': 'かしこまりました。そちらでお願いいたします。',
-    'おけ': 'かしこまりました。そちらでお願いいたします。',
-    'はい': 'はい、よろしくお願いいたします。',
-    'いいえ': 'いいえ、そちらは都合が合いません。',
-    'ない': '特にございません。',
-    'ないです': '特にございません。'
+    '大丈夫です': '問題ございません。大丈夫です。'
   };
 
-  if (dict[trimmed]) return dict[trimmed];
+  if (dict[lower] || dict[cleaned]) {
+    return dict[lower] || dict[cleaned];
+  }
 
   if (genAI) {
     try {
       const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
       const prompt = `あなたは聴覚・発話困難者のための電話代行アシスタントです。
 患者が手入力したメッセージを、病院の受付に伝えるための「最も自然で丁寧な電話口の敬語1文」に変換してください。
-機械的に「〜でお願いいたします」を文末に付けず、文脈に合わせて適切な敬語表現を選んでください。
-前置きや解説は一切不要です。変換後の1文のみを出力してください。
+決して文末に「〜です。」を機械的に付けず、前後の文脈に即した美しい敬語1文にしてください。
+前置きや解説は一切出力せず、変換後の文のみを出力してください。
 
-患者の入力: "${trimmed}"`;
+患者の入力: "${cleaned}"`;
 
       const res = await model.generateContent(prompt);
       const text = res.response.text().trim();
@@ -67,19 +83,43 @@ const brushUpText = async (rawText: string): Promise<string> => {
     }
   }
 
-  if (trimmed.endsWith('か') || trimmed.endsWith('？') || trimmed.endsWith('?')) {
-    return trimmed;
+  if (
+    cleaned.endsWith('か') || 
+    cleaned.endsWith('ます') || 
+    cleaned.endsWith('でした') || 
+    cleaned.endsWith('ございます') || 
+    cleaned.endsWith('です')
+  ) {
+    return `${cleaned}。`;
   }
-  return `${trimmed}です。`;
+
+  return `${cleaned}です。`;
 };
 
 const extractAppointmentFromHistory = async (history: { sender: string; text: string }[]) => {
   const conversation = history.map((h) => `${h.sender}: ${h.text}`).join('\n');
   console.log('[Extract] 会話ログ解析:\n', conversation);
 
+  const now = new Date();
+  const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
+
   const isTomorrow = conversation.includes('明日') || conversation.includes('あした');
-  const dateLabel = isTomorrow ? '明日 11月7日(土)' : '本日 11月6日(金)';
-  const dateYmd = isTomorrow ? '20261107' : '20261106';
+  
+  const targetDate = new Date(now);
+  if (isTomorrow) {
+    targetDate.setDate(targetDate.getDate() + 1);
+  }
+
+  const year = targetDate.getFullYear();
+  const month = targetDate.getMonth() + 1;
+  const day = targetDate.getDate();
+  const dayOfWeek = dayNames[targetDate.getDay()];
+
+  const prefix = isTomorrow ? '明日' : '本日';
+  const dateLabel = `${prefix} ${month}月${day}日(${dayOfWeek})`;
+  
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const dateYmd = `${year}${pad(month)}${pad(day)}`;
 
   let detectedHour = 18;
   const matches = [...conversation.matchAll(/(午後|午前)?\s*([0-9０-９一二三四五六七八九十]+)\s*時/g)];
@@ -100,24 +140,43 @@ const extractAppointmentFromHistory = async (history: { sender: string; text: st
     }
   }
 
-  const hourStr = String(detectedHour).padStart(2, '0');
-  const nextHourStr = String((detectedHour + 1) % 24).padStart(2, '0');
+  const hourStr = pad(detectedHour);
+  const nextHourStr = pad((detectedHour + 1) % 24);
 
   let cleanTitle = currentPatientIntent ? currentPatientIntent.trim() : '内科 初診予約';
   if (!cleanTitle.includes('予約')) {
     cleanTitle += ' 予約';
   }
 
-  const notes: string[] = [];
-  if (conversation.includes('マイナンバー') || conversation.includes('マイナ')) {
-    notes.push('持ち物: マイナンバーカード');
+  // 持ち物や確認事項の網羅的チェック（並列判定）
+  const requiredItems: string[] = [];
+
+  const hasMyna = conversation.includes('マイナンバー') || conversation.includes('マイナ');
+  const hasShikaku = conversation.includes('資格確認書') || conversation.includes('確認書');
+  const hasHokensho = conversation.includes('保険証') && !hasShikaku;
+  const hasOkusuri = conversation.includes('お薬手帳') || conversation.includes('おくすり手帳');
+
+  if (hasMyna && (hasShikaku || hasHokensho)) {
+    const secondItem = hasShikaku ? '健康保険資格確認書' : '健康保険証';
+    requiredItems.push(`マイナンバーカード または ${secondItem}`);
+  } else {
+    if (hasMyna) requiredItems.push('マイナンバーカード');
+    if (hasShikaku) requiredItems.push('健康保険資格確認書');
+    if (hasHokensho) requiredItems.push('健康保険証');
   }
-  if (conversation.includes('保険証')) {
-    notes.push('持ち物: 健康保険証');
+
+  if (hasOkusuri) {
+    requiredItems.push('お薬手帳');
+  }
+
+  const notes: string[] = [];
+  if (requiredItems.length > 0) {
+    notes.push(`持ち物: ${requiredItems.join('、')}`);
   }
   if (conversation.includes('初診')) {
     notes.push('初診受付');
   }
+
   const fallbackDetails = notes.length > 0 
     ? `${notes.join(' / ')} (EchoBridge電話予約)`
     : 'EchoBridge経由での電話予約';
@@ -134,13 +193,16 @@ const extractAppointmentFromHistory = async (history: { sender: string; text: st
   if (!genAI) return fallback;
 
   try {
+    const currentTodayLabel = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日(${dayNames[now.getDay()]})`;
     const model = genAI.getGenerativeModel({
       model: 'gemini-1.5-flash',
       generationConfig: { responseMimeType: 'application/json' }
     });
-    const prompt = `通話履歴から予約情報を抽出してください。現在日時は2026年11月6日金曜日です。
-「明日」と合意されている場合は日付を2026年11月7日(土)としてください。
-detailsには、会話で言及された持ち物（マイナンバーカードや保険証など）や注意事項を簡潔に要約して記載してください。
+
+    const prompt = `通話履歴から予約情報を抽出してください。
+現在の日時は【${currentTodayLabel}】です。
+会話の中で「本日」「明日」や具体的な日付、時間が決定されている場合は正確に反映してください。
+detailsには、会話で言及された持ち物（「マイナンバーカード」「健康保険資格確認書」「健康保険証」「お薬手帳」など）や注意事項を漏れなく正確に記載してください。「マイナンバーカードまたは健康保険資格確認書」のように選択肢として言及されている場合は、その通りに記載してください。
 
 通話履歴:
 ${conversation}
@@ -152,7 +214,7 @@ ${conversation}
   "startTimeIso": "${dateYmd}T${hourStr}0000",
   "endTimeIso": "${dateYmd}T${nextHourStr}0000",
   "location": "ひまわり医院 (受付)",
-  "details": "具体的な持ち物や決定事項のメモ (例: 持ち物: マイナンバーカード持参)"
+  "details": "持ち物や決定事項のメモ (例: 持ち物: マイナンバーカード または 健康保険資格確認書)"
 }`;
 
     const res = await model.generateContent(prompt);
@@ -166,12 +228,17 @@ wss.on('connection', (ws) => {
   console.log('[WS] クライアント接続 (接続数:', wss.clients.size, ')');
   let recognizeStream: any = null;
 
-  const startRecognitionStream = () => {
+  const stopRecognitionStream = () => {
     if (recognizeStream) {
-      recognizeStream.removeAllListeners();
+      recognizeStream.removeAllListeners('data');
+      recognizeStream.removeAllListeners('error');
       recognizeStream.end();
       recognizeStream = null;
     }
+  };
+
+  const startRecognitionStream = () => {
+    stopRecognitionStream();
 
     const request = {
       config: {
@@ -186,7 +253,7 @@ wss.on('connection', (ws) => {
       recognizeStream = speechClient.streamingRecognize(request)
         .on('error', (error: any) => {
           if (error.message && error.message.includes('Long duration elapsed without audio')) {
-            startRecognitionStream();
+            if (isHospitalRecording) startRecognitionStream();
           }
         })
         .on('data', onSpeechData);
@@ -195,8 +262,8 @@ wss.on('connection', (ws) => {
     }
   };
 
-  // 音声認識されたら即座にテキストを患者側へブロードキャスト（リアルタイム出力）
   const onSpeechData = (data: any) => {
+    if (!isHospitalRecording) return;
     const result = data.results[0];
     if (result && result.alternatives[0]) {
       const transcript = result.alternatives[0].transcript;
@@ -215,35 +282,34 @@ wss.on('connection', (ws) => {
         const data = JSON.parse(message.toString());
 
         if (data.type === 'start_call') {
-          console.log('[WS] 患者から発信:', data.intent);
           currentPatientIntent = data.intent || '';
           callHistory = [];
+          isHospitalRecording = false;
+          stopRecognitionStream();
           broadcast({ type: 'start_call', intent: data.intent });
           return;
         } else if (data.type === 'answer_call') {
-          console.log('[WS] 病院が応答');
           const greeting = `お忙しいところ恐れ入ります。AI音声アシスタントを介してお電話しております。${currentPatientIntent}をお願いしたいのですが、よろしいでしょうか？`;
           callHistory.push({ sender: '患者', text: greeting });
           broadcast({ type: 'answer_call', text: greeting });
-          if (!recognizeStream) startRecognitionStream();
           return;
         } else if (data.type === 'hospital_speaking_start') {
-          // PTT押下を即座にブロードキャスト（パルス点灯）
+          isHospitalRecording = true;
+          currentHospitalTranscript = '';
+          startRecognitionStream();
           broadcast({ type: 'hospital_speaking_start' });
-          if (!recognizeStream) startRecognitionStream();
           return;
         } else if (data.type === 'hospital_speaking_stop') {
+          isHospitalRecording = false;
+          stopRecognitionStream();
           broadcast({ type: 'hospital_speaking_stop' });
           return;
         } else if (data.type === 'hospital_speech_end' || data.type === 'force_finalize') {
-          const textToAnalyze = currentHospitalTranscript.trim();
-          console.log('[Gemini] マイク解除。確定テキスト:', textToAnalyze);
+          isHospitalRecording = false;
+          stopRecognitionStream();
 
-          if (recognizeStream) {
-            recognizeStream.removeAllListeners('data');
-            recognizeStream.end();
-            recognizeStream = null;
-          }
+          const textToAnalyze = currentHospitalTranscript.trim();
+          currentHospitalTranscript = '';
 
           if (textToAnalyze) {
             callHistory.push({ sender: '病院受付', text: textToAnalyze });
@@ -263,10 +329,12 @@ wss.on('connection', (ws) => {
           } else {
             broadcast({ type: 'hospital_speaking_stop' });
           }
-          currentHospitalTranscript = '';
+          return;
+        } else if (data.type === 'patient_typing_notice') {
+          const noticeText = '通話内容入力中のためお待ちください';
+          broadcast({ type: 'patient_typing_notice', text: noticeText });
           return;
         } else if (data.type === 'patient_send') {
-          console.log('[WS] 患者手入力:', data.text);
           const brushedUp = await brushUpText(data.text);
           callHistory.push({ sender: '患者', text: brushedUp });
           broadcast({ type: 'patient_speech', text: brushedUp });
@@ -275,52 +343,42 @@ wss.on('connection', (ws) => {
           callHistory.push({ sender: '患者', text: data.text });
           broadcast({ type: 'patient_speech', text: data.text });
           return;
+        } else if (data.type === 'patient_speaking_status') {
+          broadcast({ type: 'patient_speaking_status', isSpeaking: data.isSpeaking });
+          return;
         } else if (data.type === 'end_call') {
-          console.log('[WS] 通話終了');
-          if (recognizeStream) {
-            recognizeStream.removeAllListeners();
-            recognizeStream.end();
-            recognizeStream = null;
-          }
-
+          isHospitalRecording = false;
+          stopRecognitionStream();
           broadcast({ type: 'call_ending' });
           const appointment = await extractAppointmentFromHistory(callHistory);
-          console.log('[WS] 予約抽出結果:', appointment);
           broadcast({ type: 'end_call', appointment });
 
           currentHospitalTranscript = '';
           currentPatientIntent = '';
           return;
         } else if (data.type === 'reset_call') {
-          console.log('[WS] 全クライアントをリセット');
-          if (recognizeStream) {
-            recognizeStream.removeAllListeners();
-            recognizeStream.end();
-            recognizeStream = null;
-          }
+          isHospitalRecording = false;
+          stopRecognitionStream();
           currentHospitalTranscript = '';
           currentPatientIntent = '';
           callHistory = [];
           broadcast({ type: 'reset_call' });
           return;
         }
-      } catch {
-        // バイナリフォールスルー
-      }
+      } catch {}
     }
 
-    if (!recognizeStream) startRecognitionStream();
-    if (recognizeStream && recognizeStream.writable) {
+    if (isBinary && isHospitalRecording && recognizeStream && recognizeStream.writable) {
       recognizeStream.write(message);
     }
   });
 
   ws.on('close', () => {
-    if (wss.clients.size === 0 && recognizeStream) {
-      recognizeStream.removeAllListeners();
-      recognizeStream.end();
-      recognizeStream = null;
+    console.log('[WS] クライアント切断 (現在の接続数:', wss.clients.size, ')');
+    if (wss.clients.size === 0) {
+      stopRecognitionStream();
       currentHospitalTranscript = '';
+      isHospitalRecording = false;
     }
   });
 });

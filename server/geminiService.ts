@@ -12,112 +12,82 @@ export interface SuggestionResponse {
   suggestions: SuggestionItem[];
 }
 
-// 病院受付の発話内容に応じたインテリジェント・フォールバック候補
-function getContextualFallback(text: string): SuggestionItem[] {
-  const t = text.toLowerCase();
+export async function generateSuggestionsWithGemini(hospitalTranscript: string): Promise<SuggestionResponse> {
+  const text = hospitalTranscript.trim();
 
-  // 1. マイナンバーカードに関する発言
-  if (t.includes('マイナンバー') || t.includes('マイナン') || t.includes('マイナ')) {
-    return [
-      { text: '承知いたしました。マイナンバーカードを持参いたします。', tag: '了解' },
-      { text: 'マイナンバーカードの他に持参するものはありますか？', tag: '持ち物確認' },
-      { text: '健康保険証も念のため持参した方がよろしいでしょうか？', tag: '保険証確認' }
-    ];
+  // 1. ルールベースの即時フォールバック（最新の制度に合わせた候補定義）
+  let fallback: SuggestionResponse = {
+    suggestions: [
+      { text: 'はい、承知いたしました。', tag: '了解' },
+      { text: '別の日時でお願いできますでしょうか？', tag: '別日程' },
+      { text: '他に持参するものはございますでしょうか？', tag: '持ち物確認' }
+    ]
+  };
+
+  if (text.includes('マイナンバー') || text.includes('資格確認書') || text.includes('保険証')) {
+    fallback = {
+      suggestions: [
+        { text: '承知いたしました。マイナンバーカードを持参いたします。', tag: 'マイナ持参' },
+        { text: '資格確認書の方を持参いたします。', tag: '資格確認書持参' },
+        { text: 'お薬手帳や紹介状なども持参した方がよろしいでしょうか？', tag: '持ち物確認' }
+      ]
+    };
+  } else if (text.includes('いつ') || text.includes('都合') || text.includes('何時') || text.includes('予約')) {
+    fallback = {
+      suggestions: [
+        { text: '明日の午前中を希望いたします。', tag: '明日午前' },
+        { text: '明日の午後で空いている時間はございますか？', tag: '明日午後' },
+        { text: '一番早い日時でお願いできますでしょうか？', tag: '最短希望' }
+      ]
+    };
+  } else if (text.includes('初診') || text.includes('受診')) {
+    fallback = {
+      suggestions: [
+        { text: 'はい、初診です。予約をお願いできますでしょうか？', tag: '初診予約' },
+        { text: '以前かかったことがあります。', tag: '再診' },
+        { text: '受付時間を教えていただけますでしょうか？', tag: '時間確認' }
+      ]
+    };
   }
-
-  // 2. 健康保険証に関する発言
-  if (t.includes('保険証')) {
-    return [
-      { text: '承知いたしました。健康保険証を持参いたします。', tag: '了解' },
-      { text: 'マイナンバーカードでも対応可能でしょうか？', tag: 'マイナ確認' },
-      { text: '他に持参すべき書類や持ち物はございますか？', tag: '持ち物確認' }
-    ];
-  }
-
-  // 3. 日程・時間に関する発言（「〜時」「〜日」「都合」「空い」など）
-  if (t.includes('時') || t.includes('日') || t.includes('都合') || t.includes('いつ') || t.includes('空い')) {
-    return [
-      { text: 'はい、その時間でお願いいたします。', tag: '合意' },
-      { text: '恐れ入ります、別の時間帯は空いていますでしょうか？', tag: '時間変更' },
-      { text: '午前中の早い時間帯を希望したいです。', tag: '時間希望' }
-    ];
-  }
-
-  // 4. 住所・場所・アクセスに関する発言
-  if (t.includes('住所') || t.includes('場所') || t.includes('存知') || t.includes('道') || t.includes('駅')) {
-    return [
-      { text: 'はい、場所は把握しておりますので大丈夫です。', tag: '把握済' },
-      { text: '念のため最寄り駅や目印を教えていただけますでしょうか？', tag: 'アクセス確認' },
-      { text: '駐車スペースはございますでしょうか？', tag: '駐車場確認' }
-    ];
-  }
-
-  // 5. 症状・科に関する発言
-  if (t.includes('初診') || t.includes('熱') || t.includes('症状') || t.includes('痛') || t.includes('どうされ')) {
-    return [
-      { text: '初診で受診を希望しております。', tag: '初診希望' },
-      { text: '発熱があり、診察をお願いしたいです。', tag: '症状伝達' },
-      { text: '事前のWEB問診票などはありますでしょうか？', tag: '問診確認' }
-    ];
-  }
-
-  // 6. 挨拶・締め（「お待ちしております」など）
-  if (t.includes('お待ち') || t.includes('よろしく') || t.includes('失礼')) {
-    return [
-      { text: 'ありがとうございます。それでは伺います。', tag: '感謝' },
-      { text: 'よろしくお願いいたします。失礼いたします。', tag: '通話終了' },
-      { text: 'ご丁寧に対応いただきありがとうございました。', tag: 'お礼' }
-    ];
-  }
-
-  // 7. デフォルト候補
-  return [
-    { text: 'はい、承知いたしました。よろしくお願いいたします。', tag: '了解' },
-    { text: '恐れ入ります、もう一度お願いできますでしょうか？', tag: '聞き返し' },
-    { text: '確認いたしました。問題ございません。', tag: '確認' }
-  ];
-}
-
-export async function generateSuggestionsWithGemini(hospitalText: string): Promise<SuggestionResponse> {
-  const fallback = { suggestions: getContextualFallback(hospitalText) };
 
   if (!genAI) {
     return fallback;
   }
 
+  // 2. Gemini による動的生成（プロンプトでも現行制度を指示）
   try {
     const model = genAI.getGenerativeModel({
       model: 'gemini-1.5-flash',
-      generationConfig: {
-        responseMimeType: 'application/json',
-      }
+      generationConfig: { responseMimeType: 'application/json' }
     });
 
-    const prompt = `あなたは聴覚・発話困難者のための電話代行支援AIです。
-病院受付からの以下の発言を聞いて、患者がワンタップで即答できる「自然で適切な返答候補」を3つ作成し、JSONで返してください。
-相手が求めている持ち物や指示内容に正確に即した返答を作成してください。
+    const prompt = `あなたは聴覚・発話困難者のための電話代行アシスタントです。
+病院受付の発言内容を聞き、患者がワンタップで即座に返信・発話できる「自然で礼儀正しい返答選択肢3つ」を生成してください。
 
-病院側の発言: "${hospitalText}"
+【制約事項】
+- 現行の医療保険制度に基づき、「従来の健康保険証」を持参するような提案は一切出さないでください。保険確認に関する候補は「マイナンバーカード」または「健康保険資格確認書」を使用してください。
+- 1つ目は「承諾・肯定」、2つ目は「別の日時や代替案の提示」、3つ目は「持ち物（お薬手帳等）や質問・確認」など、状況に応じた使い分けができるバリエーションにしてください。
+
+病院受付の発言:
+"${text}"
 
 出力スキーマ:
 {
   "suggestions": [
-    { "text": "返答メッセージ1 (敬語)", "tag": "要約タグ (例: 了解, 確認)" },
-    { "text": "返答メッセージ2 (敬語)", "tag": "要約タグ" },
-    { "text": "返答メッセージ3 (敬語)", "tag": "要約タグ" }
+    { "text": "患者が返答する丁寧な敬語1文", "tag": "簡潔なタグ(3〜6文字)" },
+    { "text": "患者が返答する丁寧な敬語1文", "tag": "簡潔なタグ(3〜6文字)" },
+    { "text": "患者が返答する丁寧な敬語1文", "tag": "簡潔なタグ(3〜6文字)" }
   ]
 }`;
 
-    const result = await model.generateContent(prompt);
-    const responseText = result.response.text();
-    const parsed = JSON.parse(responseText);
-
-    if (parsed && Array.isArray(parsed.suggestions) && parsed.suggestions.length > 0) {
+    const res = await model.generateContent(prompt);
+    const parsed = JSON.parse(res.response.text().trim());
+    if (parsed.suggestions && parsed.suggestions.length >= 3) {
       return parsed;
     }
-    return fallback;
-  } catch (error) {
-    console.warn('[Gemini Service] フォールバック候補を返します。');
-    return fallback;
+  } catch (err) {
+    console.error('[Gemini Suggestions Error]', err);
   }
+
+  return fallback;
 }

@@ -6,8 +6,8 @@ import { Phone, Mic, RotateCcw } from 'lucide-react';
 export default function HospitalApp() {
   const [isConnected, setIsConnected] = useState(false);
   const [callState, setCallState] = useState<'idle' | 'ringing' | 'connected' | 'ended'>('idle');
-  const [callerIntent, setCallerIntent] = useState('');
   const [isRecording, setIsRecording] = useState(false);
+  const [isPatientSpeaking, setIsPatientSpeaking] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<any>(null);
@@ -15,69 +15,117 @@ export default function HospitalApp() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
 
+  // 着信音用の管理Ref
   const ringtoneTimerRef = useRef<any>(null);
   const ringAudioCtxRef = useRef<AudioContext | null>(null);
+  const activeGainRef = useRef<GainNode | null>(null);
 
-  const startRingtone = () => {
+  const speechQueueRef = useRef<string[]>([]);
+  const isSpeakingRef = useRef<boolean>(false);
+
+  const processSpeechQueue = useCallback(() => {
+    if (isSpeakingRef.current || speechQueueRef.current.length === 0) return;
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+    const nextText = speechQueueRef.current.shift();
+    if (!nextText) return;
+
+    isSpeakingRef.current = true;
+    const utterance = new SpeechSynthesisUtterance(nextText);
+    utterance.lang = 'ja-JP';
+    utterance.rate = 1.0;
+
+    utterance.onend = () => {
+      isSpeakingRef.current = false;
+      processSpeechQueue();
+    };
+
+    utterance.onerror = () => {
+      isSpeakingRef.current = false;
+      processSpeechQueue();
+    };
+
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
+  const queueSpeech = useCallback((text: string) => {
+    speechQueueRef.current.push(text);
+    processSpeechQueue();
+  }, [processSpeechQueue]);
+
+  const clearSpeechQueue = () => {
+    speechQueueRef.current = [];
+    isSpeakingRef.current = false;
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+  };
+
+  // 着信音の完全停止処理
+  const stopRingtone = useCallback(() => {
+    if (ringtoneTimerRef.current) {
+      clearInterval(ringtoneTimerRef.current);
+      ringtoneTimerRef.current = null;
+    }
+    if (activeGainRef.current) {
+      try {
+        activeGainRef.current.gain.setValueAtTime(0, 0);
+      } catch {}
+      activeGainRef.current = null;
+    }
+    if (ringAudioCtxRef.current) {
+      try {
+        if (ringAudioCtxRef.current.state !== 'closed') {
+          ringAudioCtxRef.current.close().catch(() => {});
+        }
+      } catch {}
+      ringAudioCtxRef.current = null;
+    }
+  }, []);
+
+  // 着信音の開始処理（既存の音を止めてから鳴らす）
+  const startRingtone = useCallback(() => {
+    stopRingtone(); // 二重再生を完全防止
+
     try {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const ctx = new AudioCtx();
       ringAudioCtxRef.current = ctx;
 
       const playRing = () => {
         if (!ringAudioCtxRef.current || ringAudioCtxRef.current.state === 'closed') return;
 
-        const osc1 = ctx.createOscillator();
-        const osc2 = ctx.createOscillator();
-        const gain = ctx.createGain();
+        try {
+          const osc1 = ctx.createOscillator();
+          const osc2 = ctx.createOscillator();
+          const gain = ctx.createGain();
+          activeGainRef.current = gain;
 
-        osc1.type = 'sine';
-        osc2.type = 'sine';
-        osc1.frequency.setValueAtTime(400, ctx.currentTime);
-        osc2.frequency.setValueAtTime(450, ctx.currentTime);
+          osc1.type = 'sine';
+          osc2.type = 'sine';
+          osc1.frequency.setValueAtTime(400, ctx.currentTime);
+          osc2.frequency.setValueAtTime(450, ctx.currentTime);
 
-        gain.gain.setValueAtTime(0, ctx.currentTime);
-        gain.gain.linearRampToValueAtTime(0.12, ctx.currentTime + 0.05);
-        gain.gain.setValueAtTime(0.12, ctx.currentTime + 0.95);
-        gain.gain.linearRampToValueAtTime(0.001, ctx.currentTime + 1.0);
+          gain.gain.setValueAtTime(0, ctx.currentTime);
+          gain.gain.linearRampToValueAtTime(0.12, ctx.currentTime + 0.05);
+          gain.gain.setValueAtTime(0.12, ctx.currentTime + 0.95);
+          gain.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + 1.0);
 
-        osc1.connect(gain);
-        osc2.connect(gain);
-        gain.connect(ctx.destination);
+          osc1.connect(gain);
+          osc2.connect(gain);
+          gain.connect(ctx.destination);
 
-        osc1.start(ctx.currentTime);
-        osc2.start(ctx.currentTime);
-        osc1.stop(ctx.currentTime + 1.0);
-        osc2.stop(ctx.currentTime + 1.0);
+          osc1.start(ctx.currentTime);
+          osc2.start(ctx.currentTime);
+          osc1.stop(ctx.currentTime + 1.0);
+          osc2.stop(ctx.currentTime + 1.0);
+        } catch {}
       };
 
       playRing();
       ringtoneTimerRef.current = setInterval(playRing, 3000);
-    } catch {
-      // 無視
-    }
-  };
-
-  const stopRingtone = () => {
-    if (ringtoneTimerRef.current) {
-      clearInterval(ringtoneTimerRef.current);
-      ringtoneTimerRef.current = null;
-    }
-    if (ringAudioCtxRef.current && ringAudioCtxRef.current.state !== 'closed') {
-      ringAudioCtxRef.current.close().catch(() => {});
-      ringAudioCtxRef.current = null;
-    }
-  };
-
-  const speakText = (text: string) => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'ja-JP';
-      utterance.rate = 1.0;
-      utterance.pitch = 1.0;
-      window.speechSynthesis.speak(utterance);
-    }
-  };
+    } catch {}
+  }, [stopRingtone]);
 
   const connectWebSocket = useCallback(() => {
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
@@ -104,39 +152,44 @@ export default function HospitalApp() {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'start_call') {
-          setCallerIntent(data.intent || '');
           setCallState('ringing');
           startRingtone();
         } else if (data.type === 'answer_call') {
-          if (data.text) speakText(data.text);
+          stopRingtone(); // 念のため応答メッセージ受信時にも確実に停止
+          if (data.text) queueSpeech(data.text);
+        } else if (data.type === 'patient_typing_notice') {
+          if (data.text) queueSpeech(data.text);
         } else if (data.type === 'patient_speech') {
-          speakText(data.text);
+          if (data.text) queueSpeech(data.text);
+        } else if (data.type === 'patient_speaking_status') {
+          setIsPatientSpeaking(data.isSpeaking);
         } else if (data.type === 'call_ending' || data.type === 'end_call') {
           stopRingtone();
+          clearSpeechQueue();
           setCallState('ended');
         } else if (data.type === 'reset_call') {
           stopRingtone();
+          clearSpeechQueue();
           setCallState('idle');
-          setCallerIntent('');
           setIsRecording(false);
+          setIsPatientSpeaking(false);
         }
-      } catch {
-        // パースエラー無視
-      }
+      } catch {}
     };
-  }, []);
+  }, [queueSpeech, startRingtone, stopRingtone]);
 
   useEffect(() => {
     connectWebSocket();
     return () => {
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       stopRingtone();
+      clearSpeechQueue();
       if (wsRef.current) wsRef.current.close();
     };
-  }, [connectWebSocket]);
+  }, [connectWebSocket, stopRingtone]);
 
   const handleAnswerCall = () => {
-    stopRingtone();
+    stopRingtone(); // ボタン押下時に即時停止
     setCallState('connected');
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'answer_call' }));
@@ -144,21 +197,20 @@ export default function HospitalApp() {
   };
 
   const handleGlobalReset = () => {
+    stopRingtone();
+    clearSpeechQueue();
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'reset_call' }));
     }
-    stopRingtone();
     setCallState('idle');
-    setCallerIntent('');
     setIsRecording(false);
+    setIsPatientSpeaking(false);
   };
 
-  // PTT ボタン押下時（0ミリ秒で即座に信号送信）
   const startRecording = async () => {
-    if (isRecording) return;
+    if (isRecording || isSpeakingRef.current || isPatientSpeaking) return;
     setIsRecording(true);
 
-    // ★マイク準備を待たずに即時送信し、患者側のパルスを瞬時に動かす
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'hospital_speaking_start' }));
     }
@@ -167,7 +219,8 @@ export default function HospitalApp() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
 
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const audioContext = new AudioCtx({ sampleRate: 16000 });
       audioContextRef.current = audioContext;
 
       const source = audioContext.createMediaStreamSource(stream);
@@ -175,6 +228,10 @@ export default function HospitalApp() {
       processorRef.current = processor;
 
       processor.onaudioprocess = (e) => {
+        if (typeof window !== 'undefined' && window.speechSynthesis && window.speechSynthesis.speaking) {
+          return;
+        }
+
         const inputData = e.inputBuffer.getChannelData(0);
         const outputData = new Int16Array(inputData.length);
         for (let i = 0; i < inputData.length; i++) {
@@ -198,7 +255,6 @@ export default function HospitalApp() {
     }
   };
 
-  // PTT ボタン解除時
   const stopRecording = () => {
     if (!isRecording) return;
 
@@ -258,14 +314,7 @@ export default function HospitalApp() {
               <div className="w-24 h-24 bg-green-500/20 rounded-full flex items-center justify-center mx-auto shadow-lg shadow-green-500/20">
                 <Phone className="w-10 h-10 text-green-400" />
               </div>
-              <div>
-                <div className="text-green-400 font-bold text-lg">着信中... 🔔</div>
-                {callerIntent && (
-                  <div className="text-xs text-slate-200 mt-3 px-4 py-2 bg-slate-700 rounded-xl border border-slate-600">
-                    用件: {callerIntent}
-                  </div>
-                )}
-              </div>
+              <div className="text-green-400 font-bold text-lg">着信中... 🔔</div>
               <button
                 onClick={handleAnswerCall}
                 className="bg-green-500 hover:bg-green-600 text-white px-8 py-3 rounded-full font-bold shadow-lg transition active:scale-95"
@@ -288,15 +337,24 @@ export default function HospitalApp() {
                 onMouseLeave={stopRecording}
                 onTouchStart={startRecording}
                 onTouchEnd={stopRecording}
+                disabled={isPatientSpeaking}
                 className={`w-36 h-36 rounded-full flex items-center justify-center transition-all ${
-                  isRecording ? 'bg-red-500 scale-95 shadow-[0_0_35px_rgba(239,68,68,0.7)]' : 'bg-slate-700 hover:bg-slate-600 shadow-xl'
+                  isRecording 
+                    ? 'bg-red-500 scale-95 shadow-[0_0_35px_rgba(239,68,68,0.7)]' 
+                    : isPatientSpeaking
+                    ? 'bg-slate-700/50 opacity-40 cursor-not-allowed'
+                    : 'bg-slate-700 hover:bg-slate-600 shadow-xl'
                 }`}
               >
                 <Mic className={`w-14 h-14 ${isRecording ? 'text-white' : 'text-slate-300'}`} />
               </button>
 
               <p className="text-slate-400 text-sm">
-                {isRecording ? '録音＆送信中...' : '長押しで発話 (PTT)'}
+                {isPatientSpeaking
+                  ? '相手が発話・入力中...'
+                  : isRecording
+                  ? '録音＆送信中...'
+                  : '長押しで発話 (PTT)'}
               </p>
             </div>
           )}

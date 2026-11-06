@@ -3,9 +3,18 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Phone, PhoneOff, Send, Calendar, Check, RotateCcw, Sparkles } from 'lucide-react';
 
-// 指定の230msスピードで文字抜けなく1文字ずつタイピング表示するコンポーネント
-const TypewriterText = ({ text, speed = 230 }: { text: string; speed?: number }) => {
+const TypewriterText = ({ 
+  text, 
+  speed = 230, 
+  onComplete 
+}: { 
+  text: string; 
+  speed?: number; 
+  onComplete?: () => void 
+}) => {
   const [count, setCount] = useState(0);
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
 
   useEffect(() => {
     setCount(0);
@@ -19,7 +28,15 @@ const TypewriterText = ({ text, speed = 230 }: { text: string; speed?: number })
     return () => clearInterval(timer);
   }, [text, speed]);
 
-  return <span>{text.slice(0, count)}</span>;
+  useEffect(() => {
+    if (count >= text.length && count > 0) {
+      if (onCompleteRef.current) {
+        onCompleteRef.current();
+      }
+    }
+  }, [count, text.length]);
+
+  return <span className="whitespace-pre-line">{text.slice(0, count)}</span>;
 };
 
 const AudioPulseBar = ({ label }: { label: string }) => (
@@ -51,7 +68,6 @@ export default function PatientApp() {
   const [patientInput, setPatientInput] = useState('');
   const [suggestions, setSuggestions] = useState<{ text: string; tag?: string }[]>([]);
   
-  // 病院側のリアルタイム音声認識ストリーミング用
   const [isHospitalSpeaking, setIsHospitalSpeaking] = useState(false);
   const [liveHospitalText, setLiveHospitalText] = useState('');
 
@@ -59,9 +75,50 @@ export default function PatientApp() {
   const [isBrushingUp, setIsBrushingUp] = useState(false);
   const [appointment, setAppointment] = useState<AppointmentInfo | null>(null);
 
+  const [isTypingNoticeActive, setIsTypingNoticeActive] = useState(false);
+  const pendingSpeechQueueRef = useRef<string[]>([]);
+  const hospitalIdleTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   const chatEndRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<any>(null);
+
+  const clearIdleTimer = useCallback(() => {
+    if (hospitalIdleTimerRef.current) {
+      clearTimeout(hospitalIdleTimerRef.current);
+      hospitalIdleTimerRef.current = null;
+    }
+  }, []);
+
+  const triggerIdleTimer = useCallback(() => {
+    clearIdleTimer();
+    hospitalIdleTimerRef.current = setTimeout(() => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        const noticeText = '通話内容入力中のためお待ちください';
+        setIsTypingNoticeActive(true);
+        setMessages((prev) => [
+          ...prev,
+          { id: String(Date.now()), sender: 'patient', text: noticeText }
+        ]);
+        wsRef.current.send(JSON.stringify({ type: 'patient_typing_notice' }));
+        wsRef.current.send(JSON.stringify({ type: 'patient_speaking_status', isSpeaking: true }));
+      }
+    }, 5000);
+  }, [clearIdleTimer]);
+
+  const handleNoticeComplete = useCallback(() => {
+    setIsTypingNoticeActive(false);
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'patient_speaking_status', isSpeaking: false }));
+    }
+    if (pendingSpeechQueueRef.current.length > 0) {
+      const nextText = pendingSpeechQueueRef.current.shift()!;
+      setMessages((prev) => [
+        ...prev,
+        { id: String(Date.now()), sender: 'patient', text: nextText }
+      ]);
+    }
+  }, []);
 
   const connectWebSocket = useCallback(() => {
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
@@ -92,6 +149,7 @@ export default function PatientApp() {
           setCallState('connected');
           setMessages([{ id: String(Date.now()), sender: 'patient', text: data.text }]);
         } else if (data.type === 'hospital_speaking_start') {
+          clearIdleTimer();
           setIsHospitalSpeaking(true);
           setLiveHospitalText('');
         } else if (data.type === 'transcript_interim') {
@@ -107,6 +165,7 @@ export default function PatientApp() {
             ...prev,
             { id: String(Date.now()), sender: 'hospital', text: data.text }
           ]);
+          triggerIdleTimer();
         } else if (data.type === 'generating_suggestions') {
           setIsGenerating(true);
           setSuggestions([]);
@@ -115,17 +174,23 @@ export default function PatientApp() {
           setIsGenerating(false);
         } else if (data.type === 'patient_speech') {
           setIsBrushingUp(false);
-          setMessages((prev) => [
-            ...prev,
-            { id: String(Date.now()), sender: 'patient', text: data.text }
-          ]);
+          if (isTypingNoticeActive) {
+            pendingSpeechQueueRef.current.push(data.text);
+          } else {
+            setMessages((prev) => [
+              ...prev,
+              { id: String(Date.now()), sender: 'patient', text: data.text }
+            ]);
+          }
         } else if (data.type === 'call_ending') {
           setCallState('analyzing');
+          clearIdleTimer();
         } else if (data.type === 'end_call') {
           if (data.appointment) {
             setAppointment(data.appointment);
           }
           setCallState('summary');
+          clearIdleTimer();
         } else if (data.type === 'reset_call') {
           setCallState('idle');
           setMessages([]);
@@ -136,20 +201,24 @@ export default function PatientApp() {
           setAppointment(null);
           setIsGenerating(false);
           setIsBrushingUp(false);
+          setIsTypingNoticeActive(false);
+          pendingSpeechQueueRef.current = [];
+          clearIdleTimer();
         }
       } catch {
         // パースエラー無視
       }
     };
-  }, []);
+  }, [clearIdleTimer, triggerIdleTimer, isTypingNoticeActive]);
 
   useEffect(() => {
     connectWebSocket();
     return () => {
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      clearIdleTimer();
       if (wsRef.current) wsRef.current.close();
     };
-  }, [connectWebSocket]);
+  }, [connectWebSocket, clearIdleTimer]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -166,18 +235,23 @@ export default function PatientApp() {
   };
 
   const handleSendManualInput = () => {
-    if (!patientInput.trim()) return;
+    if (!patientInput.trim() || isHospitalSpeaking) return;
+    clearIdleTimer();
     const raw = patientInput;
     setPatientInput('');
     setIsBrushingUp(true);
     setSuggestions([]);
+
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'patient_send', text: raw }));
     }
   };
 
   const handleSendSuggestion = (text: string) => {
+    if (isHospitalSpeaking) return;
+    clearIdleTimer();
     setSuggestions([]);
+
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'patient_speech_direct', text }));
     }
@@ -185,12 +259,14 @@ export default function PatientApp() {
 
   const handleEndCall = () => {
     setCallState('analyzing');
+    clearIdleTimer();
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'end_call' }));
     }
   };
 
   const handleGlobalReset = () => {
+    clearIdleTimer();
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'reset_call' }));
     }
@@ -203,6 +279,8 @@ export default function PatientApp() {
     setAppointment(null);
     setIsGenerating(false);
     setIsBrushingUp(false);
+    setIsTypingNoticeActive(false);
+    pendingSpeechQueueRef.current = [];
   };
 
   const openGoogleCalendar = () => {
@@ -217,7 +295,6 @@ export default function PatientApp() {
 
   return (
     <div className="flex h-screen bg-slate-950 items-center justify-center p-4 relative">
-      {/* 画面外 全体リセットボタン */}
       <div className="absolute top-4 right-6 z-50">
         <button
           onClick={handleGlobalReset}
@@ -232,7 +309,6 @@ export default function PatientApp() {
       <div className="w-[360px] h-[780px] bg-slate-900 rounded-[3rem] border-[10px] border-slate-700 relative overflow-hidden flex flex-col shadow-2xl">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-slate-700 rounded-b-2xl z-10" />
 
-        {/* ヘッダー */}
         <header className="pt-10 pb-3 px-5 border-b border-slate-800 flex items-center justify-between z-20">
           <div className="flex items-center gap-2">
             <h1 className="text-base font-extrabold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
@@ -288,11 +364,10 @@ export default function PatientApp() {
 
         {callState === 'connected' && (
           <div className="flex-1 flex flex-col overflow-hidden">
-            {/* 病院受付がPTTボタンを押している間リアルタイムに波打つパルス */}
-            {isHospitalSpeaking && <AudioPulseBar label="病院受付が発話中..." />}
+            {isHospitalSpeaking && <AudioPulseBar label="病院受付が発話中... (送信待機)" />}
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {messages.map((msg) => (
+              {messages.map((msg, index) => (
                 <div key={msg.id} className={`flex flex-col ${msg.sender === 'patient' ? 'items-end' : 'items-start'}`}>
                   <span className="text-[10px] text-slate-500 mb-1">{msg.sender === 'patient' ? 'あなた (AI音声)' : '病院受付'}</span>
                   <div
@@ -300,9 +375,12 @@ export default function PatientApp() {
                       msg.sender === 'patient' ? 'bg-indigo-600 text-white rounded-tr-sm' : 'bg-slate-700 text-slate-100 rounded-tl-sm'
                     }`}
                   >
-                    {/* ★患者側（AI音声）のみ230msスピードで1文字ずつ出力 */}
                     {msg.sender === 'patient' ? (
-                      <TypewriterText text={msg.text} speed={230} />
+                      <TypewriterText 
+                        text={msg.text} 
+                        speed={230} 
+                        onComplete={index === messages.length - 1 && isTypingNoticeActive ? handleNoticeComplete : undefined}
+                      />
                     ) : (
                       msg.text
                     )}
@@ -310,7 +388,6 @@ export default function PatientApp() {
                 </div>
               ))}
 
-              {/* 病院側の音声認識中リアルタイムストリーミング吹き出し */}
               {liveHospitalText && (
                 <div className="flex flex-col items-start animate-in fade-in duration-100">
                   <span className="text-[10px] text-indigo-400 mb-1 flex items-center gap-1 font-medium">
@@ -348,7 +425,8 @@ export default function PatientApp() {
                     <button
                       key={idx}
                       onClick={() => handleSendSuggestion(sug.text)}
-                      className="w-full text-left bg-slate-700 hover:bg-slate-600 p-3 rounded-xl border border-slate-600 transition flex flex-col gap-1 active:scale-[0.98]"
+                      disabled={isHospitalSpeaking}
+                      className="w-full text-left bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:pointer-events-none p-3 rounded-xl border border-slate-600 transition flex flex-col gap-1 active:scale-[0.98]"
                     >
                       <span className="text-xs text-white leading-snug">{sug.text}</span>
                       {sug.tag && <span className="text-[10px] text-indigo-300 font-semibold">{sug.tag}</span>}
@@ -361,14 +439,15 @@ export default function PatientApp() {
                 <input
                   type="text"
                   value={patientInput}
+                  disabled={isHospitalSpeaking}
                   onChange={(e) => setPatientInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSendManualInput()}
-                  placeholder="要件を入力 (自然な敬語に変換)..."
-                  className="flex-1 bg-slate-900 border border-slate-600 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  placeholder={isHospitalSpeaking ? "相手が話しています..." : "要件を入力 (自然な敬語に変換)..."}
+                  className="flex-1 bg-slate-900 border border-slate-600 disabled:opacity-50 disabled:bg-slate-950 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-indigo-500"
                 />
                 <button
                   onClick={handleSendManualInput}
-                  disabled={!patientInput.trim() || isBrushingUp}
+                  disabled={!patientInput.trim() || isBrushingUp || isHospitalSpeaking}
                   className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 p-3 rounded-xl transition flex-shrink-0 text-white"
                 >
                   <Send className="w-4 h-4" />
