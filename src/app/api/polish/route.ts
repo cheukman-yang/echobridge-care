@@ -1,69 +1,73 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const ACTIVE_MODELS = [
-  'gemini-3.1-flash-lite',
-  'gemini-3.6-flash',
-  'gemini-3.7-flash',
-];
+const apiKey = process.env.GEMINI_API_KEY || '';
+const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 
 export async function POST(req: NextRequest) {
   try {
-    const { text } = await req.json();
-    if (!text || typeof text !== 'string') {
-      return NextResponse.json({ polishedText: text || '' });
+    const body = await req.json();
+    const rawText = (body.text || '').trim();
+
+    if (!rawText) {
+      return NextResponse.json({ error: 'Text is required' }, { status: 400 });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.warn('[Polish API] GEMINI_API_KEY is not set');
-      return NextResponse.json({ polishedText: text });
+    const dict: { [key: string]: string } = {
+      'わかった': '承知いたしました。',
+      'わかりました': '承知いたしました。',
+      '了解': '承知いたしました。',
+      '了解です': '承知いたしました。',
+      'ありがとう': 'ありがとうございます。',
+      'ありがとうございます': 'ありがとうございます。',
+      'ありがとうございました': 'ありがとうございました。失礼いたします。',
+      '大丈夫': '問題ございません。大丈夫です。',
+      '大丈夫です': '問題ございません。大丈夫です。',
+      'ok': 'かしこまりました。そちらでお願いいたします。',
+      'okです': 'かしこまりました。そちらでお願いいたします。',
+      'おけ': 'かしこまりました。そちらでお願いいたします。',
+      'はい': 'はい、よろしくお願いいたします。',
+      'いいえ': 'いいえ、そちらは都合が合いません。'
+    };
+
+    const cleaned = rawText.replace(/[。、！？.!?]+$/, '');
+    const lower = cleaned.toLowerCase();
+
+    if (dict[lower] || dict[cleaned]) {
+      return NextResponse.json({ polished: dict[lower] || dict[cleaned] });
     }
 
-    const prompt = `あなたは病院・クリニックへの電話予約を支援するAIアシスタントです。
-以下の患者からのラフな入力文を、電話口の受付スタッフに対して話すのに最も適した「丁寧で礼儀正しい敬語の発話文」に1文で変換（ブラッシュアップ）してください。
-
-【ルール】
-- 余計な解説、挨拶文、引用符などは一切含めず、変換後の発話文のみを出力してください。
-- 意図（日時希望、症状の伝達、質問など）を一切損なわず、電話予約のマナーに即した自然な敬語にしてください。
-- 長すぎず、1〜2文程度の簡潔な発話にしてください。
-
-入力文: "${text}"
-変換後の発話文:`;
-
-    for (const model of ACTIVE_MODELS) {
+    if (genAI) {
       try {
-        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              temperature: 0.2,
-              maxOutputTokens: 100,
-            },
-          }),
-        });
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const prompt = `あなたは聴覚・発話困難者のための電話代行アシスタントです。
+患者が手入力したメッセージを、病院の受付に伝えるための「最も自然で丁寧な電話口の敬語1文」に変換してください。
+決して文末に「〜です。」を機械的に付けず、前後の文脈に即した美しい敬語1文にしてください。
+前置きや解説は一切出力せず、変換後の文のみを出力してください。
 
-        if (!res.ok) continue;
+患者の入力: "${cleaned}"`;
 
-        const data = await res.json();
-        const output = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-        if (output) {
-          // 余分な引用符や改行を除去
-          const cleanOutput = output.replace(/^["「』]+|["」』]+$/g, '').trim();
-          return NextResponse.json({ polishedText: cleanOutput });
+        const res = await model.generateContent(prompt);
+        const polished = res.response.text().trim();
+        if (polished) {
+          return NextResponse.json({ polished });
         }
-      } catch (err) {
-        console.error(`[Polish API] Error with ${model}:`, err);
-        continue;
+      } catch (geminiError) {
+        console.error('[Gemini API Polish Error]', geminiError);
       }
     }
 
-    // フォールバック: そのまま返す
-    return NextResponse.json({ polishedText: text });
+    const fallbackPolished = (
+      cleaned.endsWith('か') || 
+      cleaned.endsWith('ます') || 
+      cleaned.endsWith('でした') || 
+      cleaned.endsWith('ございます') || 
+      cleaned.endsWith('です')
+    ) ? `${cleaned}。` : `${cleaned}です。`;
+
+    return NextResponse.json({ polished: fallbackPolished });
   } catch (error) {
-    console.error('[Polish API] Internal error:', error);
-    return NextResponse.json({ polishedText: text });
+    console.error('[Route Error]', error);
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }

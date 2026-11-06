@@ -1,14 +1,14 @@
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
-import WebSocket from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 import speech from '@google-cloud/speech';
 import { generateSuggestionsWithGemini } from './geminiService';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server, path: '/ws/call' });
+const wss = new WebSocketServer({ server, path: '/ws/call' });
 
 const speechClient = new speech.SpeechClient();
 const apiKey = process.env.GEMINI_API_KEY || '';
@@ -21,7 +21,7 @@ let isHospitalRecording = false;
 
 const broadcast = (data: any) => {
   const msg = typeof data === 'string' ? data : JSON.stringify(data);
-  wss.clients.forEach((client) => {
+  wss.clients.forEach((client: WebSocket) => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(msg);
     }
@@ -148,7 +148,6 @@ const extractAppointmentFromHistory = async (history: { sender: string; text: st
     cleanTitle += ' 予約';
   }
 
-  // 持ち物や確認事項の網羅的チェック（並列判定）
   const requiredItems: string[] = [];
 
   const hasMyna = conversation.includes('マイナンバー') || conversation.includes('マイナ');
@@ -224,7 +223,7 @@ ${conversation}
   }
 };
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws: WebSocket) => {
   console.log('[WS] クライアント接続 (接続数:', wss.clients.size, ')');
   let recognizeStream: any = null;
 
