@@ -131,6 +131,8 @@ export interface CallLimits {
   maxPolishRequestsPerCall: number;
   /** 切れた接続を見つけるPingの間隔。 */
   heartbeatIntervalMs: number;
+  /** 通話に入っていない接続を閉じるまでの時間。判定はPingの間隔ごと。 */
+  idleConnectionMs: number;
 }
 
 export const DEFAULT_CALL_LIMITS: CallLimits = {
@@ -143,6 +145,7 @@ export const DEFAULT_CALL_LIMITS: CallLimits = {
   maxMessagesPerMinute: 120,
   maxPolishRequestsPerCall: 100,
   heartbeatIntervalMs: 30 * 1000,
+  idleConnectionMs: 10 * 60 * 1000,
 };
 
 export interface CallRoomDeps {

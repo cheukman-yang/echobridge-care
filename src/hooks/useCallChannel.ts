@@ -1,5 +1,5 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
-import { CLOSE_CODE_SEAT_TAKEN } from '@/lib/callProtocol';
+import { CLOSE_CODE_IDLE, CLOSE_CODE_SEAT_TAKEN } from '@/lib/callProtocol';
 import type { CallRole, ClientMessage, ServerMessage } from '@/lib/callProtocol';
 import { loadSeatToken, resolveCallSocketUrl, saveSeatToken } from '@/lib/callSession';
 
@@ -111,6 +111,25 @@ export function useCallSocket(channel: CallChannel, handlers: CallSocketHandlers
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     seatTokenRef.current = loadSeatToken(role);
 
+    // 待機中で閉じられたら、すぐにはつなぎ直さない。操作があるか、タブが前面に戻ったらつなぐ。
+    const ACTIVITY_EVENTS = ['pointerdown', 'keydown', 'focus'] as const;
+    let waitingForActivity = false;
+    const onActivity = () => {
+      if (!waitingForActivity || document.visibilityState !== 'visible') return;
+      stopWaitingForActivity();
+      connect();
+    };
+    const stopWaitingForActivity = () => {
+      waitingForActivity = false;
+      ACTIVITY_EVENTS.forEach((type) => window.removeEventListener(type, onActivity, true));
+      document.removeEventListener('visibilitychange', onActivity);
+    };
+    const waitForActivity = () => {
+      waitingForActivity = true;
+      ACTIVITY_EVENTS.forEach((type) => window.addEventListener(type, onActivity, true));
+      document.addEventListener('visibilitychange', onActivity);
+    };
+
     const connect = () => {
       const socket = new WebSocket(resolveCallSocketUrl(window.location));
       socketRef.current = socket;
@@ -122,6 +141,10 @@ export function useCallSocket(channel: CallChannel, handlers: CallSocketHandlers
       socket.onclose = (event) => {
         if (disposed) return;
         handleClose(event?.code);
+        if (event?.code === CLOSE_CODE_IDLE) {
+          waitForActivity();
+          return;
+        }
         retryTimer = setTimeout(connect, RECONNECT_DELAY_MS);
       };
 
@@ -141,6 +164,7 @@ export function useCallSocket(channel: CallChannel, handlers: CallSocketHandlers
 
     return () => {
       disposed = true;
+      stopWaitingForActivity();
       if (retryTimer) clearTimeout(retryTimer);
       socketRef.current?.close();
     };

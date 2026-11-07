@@ -4,6 +4,7 @@ import { isAllowedOrigin, resolveAllowedOrigins } from '../../server/callServer'
 import type { CallServerOptions } from '../../server/callServer';
 import type { GeminiModels } from '../../server/geminiClient';
 import {
+  CLOSE_CODE_IDLE,
   CLOSE_CODE_SEAT_TAKEN,
   INVITE_CODE_ALPHABET,
   INVITE_CODE_LENGTH,
@@ -816,6 +817,27 @@ describe('通話の分離', () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       expect(returning.all('call_closed')).toEqual([]);
+    });
+
+    it('通話に入らない接続は待機時間の後に閉じ、通話中の接続は閉じない', async () => {
+      await listen(null, { limits: { heartbeatIntervalMs: 40, idleConnectionMs: 80 } });
+      const { patient, hospital } = await openCall();
+      const idle = await connect();
+
+      expect(await idle.closed).toBe(CLOSE_CODE_IDLE);
+      expect(await raceClose(patient)).toBe('still open');
+      expect(await raceClose(hospital)).toBe('still open');
+    });
+
+    it('通話が閉じて席がなくなった接続も、待機時間の後に閉じる', async () => {
+      await listen(null, { limits: { heartbeatIntervalMs: 40, idleConnectionMs: 80 } });
+      const { patient, hospital } = await openCall();
+
+      patient.send({ type: 'reset_call' });
+      await hospital.waitFor('call_closed');
+
+      expect(await patient.closed).toBe(CLOSE_CODE_IDLE);
+      expect(await hospital.closed).toBe(CLOSE_CODE_IDLE);
     });
 
     it('通話中に片方だけが切断しても、通話は閉じない', async () => {

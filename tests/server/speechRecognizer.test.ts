@@ -1,5 +1,33 @@
+import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSpeechRecognizer } from '../../server/speechRecognizer';
+import type { RecognizeStream, SpeechRecognizer } from '../../server/callServer';
+import { createSpeechRecognizer, limitConcurrentStreams } from '../../server/speechRecognizer';
+
+describe('limitConcurrentStreams', () => {
+  it('上限を超える録音は断り、終わったストリームの枠を返す', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const streams: EventEmitter[] = [];
+    const base: SpeechRecognizer = {
+      status: 'ready',
+      onStatusChange: () => () => {},
+      createStream: () => {
+        const stream = new EventEmitter();
+        streams.push(stream);
+        return stream as unknown as RecognizeStream;
+      },
+    };
+    const limited = limitConcurrentStreams(base, 2);
+
+    limited.createStream();
+    limited.createStream();
+    expect(() => limited.createStream()).toThrow('speech_busy');
+
+    streams[0].emit('end');
+    streams[0].emit('close');
+    expect(() => limited.createStream()).not.toThrow();
+    expect(() => limited.createStream()).toThrow('speech_busy');
+  });
+});
 
 function fakeClient(getClient: () => Promise<unknown>) {
   return { auth: { getClient: vi.fn(getClient) }, streamingRecognize: vi.fn(() => ({ fake: 'stream' })) };

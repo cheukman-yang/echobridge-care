@@ -5,7 +5,7 @@ import speech from '@google-cloud/speech';
 import { attachCallServer, resolveAllowedOrigins } from './callServer';
 import { createGeminiRunnerFromEnv } from './geminiClient';
 import { createAiAssistant } from './geminiService';
-import { createSpeechRecognizer } from './speechRecognizer';
+import { createSpeechRecognizer, limitConcurrentStreams } from './speechRecognizer';
 
 /**
  * 本番（NODE_ENV=production）では、画面（Next.js）と通話のWebSocketを同じポートで配る。
@@ -16,6 +16,8 @@ const isProduction = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT) || 8080;
 /** Cloud RunはSIGTERMの10秒後に強制終了するので、その前に通話を閉じて知らせる。 */
 const SHUTDOWN_GRACE_MS = 8_000;
+/** 同時に録音できる数。STTの課金の上限になる。 */
+const MAX_CONCURRENT_STT_STREAMS = Number(process.env.STT_MAX_CONCURRENT_STREAMS) || 3;
 
 type RequestHandler = (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void>;
 
@@ -45,7 +47,10 @@ async function main(): Promise<void> {
     server,
     {
       ai: createAiAssistant(createGeminiRunnerFromEnv(process.env)),
-      speech: createSpeechRecognizer(new speech.SpeechClient()),
+      speech: limitConcurrentStreams(
+        createSpeechRecognizer(new speech.SpeechClient()),
+        MAX_CONCURRENT_STT_STREAMS,
+      ),
     },
     { allowedOrigins: resolveAllowedOrigins(process.env) },
   );

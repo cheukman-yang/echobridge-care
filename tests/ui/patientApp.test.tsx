@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PatientApp from '@/app/page';
 import type { AiMeta } from '@/lib/aiMeta';
-import { buildGreeting } from '@/lib/callProtocol';
+import { CLOSE_CODE_IDLE, buildGreeting } from '@/lib/callProtocol';
 import type { AppointmentDraft, ServerMessage } from '@/lib/callProtocol';
 import { SEAT_TOKEN, callJoined } from '../helpers/callMessages';
 import { FakeWebSocket } from '../helpers/fakeWebSocket';
@@ -416,6 +416,23 @@ describe('通話の接続', () => {
       vi.advanceTimersByTime(1500);
     });
 
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it('待機で閉じられたら自動ではつなぎ直さず、操作があったらつなぐ', () => {
+    vi.useFakeTimers();
+    render(<PatientApp />);
+    act(() => socket().open());
+
+    act(() => socket().drop(CLOSE_CODE_IDLE));
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    act(() => {
+      fireEvent.pointerDown(document.body);
+    });
     expect(FakeWebSocket.instances).toHaveLength(2);
   });
 

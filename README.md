@@ -13,7 +13,9 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 | `GEMINI_MODEL` | 使うモデル。変えるときは公式の退役日を確認する | `gemini-3.5-flash-lite` |
 | `GEMINI_TIMEOUT_MS` | 返答候補と文の整形を待つ上限（ミリ秒） | `8000` |
 | `GEMINI_EXTRACTION_TIMEOUT_MS` | 通話後の予定の読み取りを待つ上限（ミリ秒） | `20000` |
-| `PORT` | WebSocketサーバーのポート | `8080` |
+| `GEMINI_MAX_REQUESTS_PER_MINUTE` | サーバー全体でGeminiへ送る依頼の上限（1分あたり）。超えた分は定型文として明示して返す | `60` |
+| `STT_MAX_CONCURRENT_STREAMS` | 同時に録音できる数（STTの課金の上限） | `3` |
+| `PORT` | サーバーのポート。Cloud Runが設定する | `8080` |
 | `ALLOWED_ORIGINS` | 同一オリジンのほかに接続を許可するオリジン（カンマ区切り） | 開発時は `http://localhost:3000` と `http://127.0.0.1:3000`、`NODE_ENV=production` ではなし |
 | `NEXT_PUBLIC_WS_URL` | 通話サーバーの接続先。ビルド時に埋め込まれる。別サービスに分けるときだけ指定する | 同一オリジン（開発時は同じホストの8080番） |
 
@@ -44,6 +46,8 @@ Vertex AIの指定があれば、`GEMINI_API_KEY` は使いません。
 本番（`NODE_ENV=production`）では、`npm start`（`server/index.ts`）が画面と通話のWebSocketを同じポートで配ります。Cloud Runは1サービスで、画面は同一オリジンの `/ws/call` へつなぎます。開発時は従来どおり `npm run dev` と `npm run server` を別々に起動します。
 
 コンテナは `Dockerfile` で作ります。認証はCloud Runのサービスアカウント（ADC）を使い、鍵や `.env` はイメージに入れません。SIGTERMを受けると、通話中の画面に終了を知らせてから止まります。
+
+Cloud RunはWebSocketが1本でも開いているとインスタンスを止めないので、通話に入っていない接続は10分で閉じます。画面は、利用者が操作したときにつなぎ直します。
 
 | 必要なもの | 内容 |
 |---|---|

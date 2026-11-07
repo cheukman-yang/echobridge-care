@@ -11,6 +11,44 @@ const STREAMING_REQUEST = {
   interimResults: true,
 };
 
+/** STT v1のストリームは最長約5分なので、終わりの通知が来なくてもこの時間で枠を返す。 */
+const STREAM_SLOT_MAX_MS = 6 * 60 * 1000;
+
+/**
+ * 同時に開ける認識ストリームの数を制限する。公開URLで録音を開き続けられても、STTの課金に上限ができる。
+ * 枠がないときは例外を投げるので、画面には「録音を開始できませんでした」と出る。
+ */
+export function limitConcurrentStreams(recognizer: SpeechRecognizer, maxStreams: number): SpeechRecognizer {
+  let active = 0;
+  return {
+    get status() {
+      return recognizer.status;
+    },
+    onStatusChange: (listener) => recognizer.onStatusChange(listener),
+    createStream() {
+      if (active >= maxStreams) {
+        console.warn(JSON.stringify({ severity: 'WARNING', message: 'stt_capacity_reached', active }));
+        throw new Error('speech_busy');
+      }
+      const stream = recognizer.createStream() as RecognizeStream & EventEmitter;
+      active += 1;
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        active -= 1;
+        clearTimeout(timer);
+      };
+      const timer = setTimeout(release, STREAM_SLOT_MAX_MS);
+      timer.unref?.();
+      stream.once('end', release);
+      stream.once('close', release);
+      stream.once('error', release);
+      return stream;
+    },
+  };
+}
+
 export interface SpeechClientLike {
   auth: { getClient(): Promise<unknown> };
   streamingRecognize(request: typeof STREAMING_REQUEST): unknown;

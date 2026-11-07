@@ -187,7 +187,30 @@ export interface GeminiRunner {
   generateJson<T>(request: JsonRequest<T>): Promise<JsonResult<T>>;
 }
 
-export function createGeminiRunner(config: GeminiConfig, models: GeminiModels | null): GeminiRunner {
+export interface GeminiRunnerOptions {
+  /**
+   * サーバー全体で1分間に送れる依頼の上限。公開URLで依頼を繰り返されても、課金に上限ができる。
+   * 超えた分は呼ばずに rate_limited のフォールバックにする（画面には定型文と表示される）。
+   */
+  maxRequestsPerMinute?: number;
+}
+
+export const DEFAULT_MAX_REQUESTS_PER_MINUTE = 60;
+
+export function createGeminiRunner(
+  config: GeminiConfig,
+  models: GeminiModels | null,
+  options: GeminiRunnerOptions = {},
+): GeminiRunner {
+  const maxRequestsPerMinute = options.maxRequestsPerMinute ?? DEFAULT_MAX_REQUESTS_PER_MINUTE;
+  const recentRequests: number[] = [];
+  const takeRequestSlot = (now: number): boolean => {
+    while (recentRequests.length > 0 && now - recentRequests[0] >= 60_000) recentRequests.shift();
+    if (recentRequests.length >= maxRequestsPerMinute) return false;
+    recentRequests.push(now);
+    return true;
+  };
+
   const status: AiStatus = {
     configured: models !== null,
     backend: models ? config.backend : null,
@@ -218,6 +241,7 @@ export function createGeminiRunner(config: GeminiConfig, models: GeminiModels | 
     };
 
     if (!models) return finish('not_configured');
+    if (!takeRequestSlot(startedAt)) return finish('rate_limited');
 
     const controller = new AbortController();
     let timedOut = false;
@@ -264,5 +288,7 @@ export function createGeminiRunnerFromEnv(env: Env): GeminiRunner {
       JSON.stringify({ severity: 'WARNING', message: 'ai_not_configured', detail: config.problem }),
     );
   }
-  return createGeminiRunner(config, createGeminiModels(config));
+  return createGeminiRunner(config, createGeminiModels(config), {
+    maxRequestsPerMinute: positiveInt(env.GEMINI_MAX_REQUESTS_PER_MINUTE, DEFAULT_MAX_REQUESTS_PER_MINUTE),
+  });
 }

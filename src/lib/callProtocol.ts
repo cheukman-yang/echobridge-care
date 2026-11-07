@@ -14,6 +14,13 @@ export const CALL_SOCKET_PATH = '/ws/call';
 /** 同じ席に新しい接続が入り、古い接続を閉じたときのクローズコード。 */
 export const CLOSE_CODE_SEAT_TAKEN = 4001;
 
+/**
+ * 通話に入らないまま一定時間たった接続を閉じたときのクローズコード。
+ * Cloud Runは接続が1本でも開いているとインスタンスを止めないので、開いたままのタブで課金が続かないようにする。
+ * 画面はすぐにはつなぎ直さず、利用者が操作したときにつなぐ。
+ */
+export const CLOSE_CODE_IDLE = 4002;
+
 /** 読み間違えやすい I, L, O, U を含まない Crockford Base32。 */
 export const INVITE_CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 

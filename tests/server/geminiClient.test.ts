@@ -5,6 +5,7 @@ import {
   DEFAULT_GEMINI_MODEL,
   classifyGeminiError,
   createGeminiModels,
+  createGeminiRunner,
   resolveGeminiConfig,
 } from '../../server/geminiClient';
 import type { JsonRequest } from '../../server/geminiClient';
@@ -166,6 +167,20 @@ describe('generateJson', () => {
       data: { value: 'ok' },
       ai: { source: 'gemini', model: TEST_MODEL },
     });
+  });
+
+  it('1分あたりの上限を超えた依頼は、Geminiを呼ばずにフォールバックにする', async () => {
+    const models = createFakeModels(() => jsonReply({ value: 'ok' }));
+    const runner = createGeminiRunner(resolveGeminiConfig({ GEMINI_API_KEY: 'dummy' }), models, {
+      maxRequestsPerMinute: 1,
+    });
+
+    expect((await runner.generateJson(request)).ok).toBe(true);
+    const limited = await runner.generateJson(request);
+
+    expect(limited).toEqual({ ok: false, ai: { source: 'fallback', reason: 'rate_limited' } });
+    expect(models.generateContent).toHaveBeenCalledTimes(1);
+    expect(lastLog(warnSpy)).toMatchObject({ source: 'fallback', reason: 'rate_limited' });
   });
 
   it('JSONとスキーマを指定し、非推奨のtemperatureを送らない', async () => {

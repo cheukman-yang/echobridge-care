@@ -5,6 +5,7 @@ import type { RawData } from 'ws';
 import { z } from 'zod';
 import {
   CALL_SOCKET_PATH,
+  CLOSE_CODE_IDLE,
   CLOSE_CODE_SEAT_TAKEN,
   MAX_PATIENT_TEXT_LENGTH,
   SPEECH_ORIGINS,
@@ -119,6 +120,8 @@ interface Connection extends CallPeer {
   isAlive: boolean;
   windowStartedAt: number;
   messagesInWindow: number;
+  /** 席を持たなくなった時刻。席にいる間は null。 */
+  unseatedSince: number | null;
 }
 
 export interface CallServerDeps {
@@ -190,9 +193,15 @@ export function attachCallServer(
 
   // 通信が途切れてもサーバーからは接続中に見えることがあるので、Pingの応答で確かめる。
   const heartbeat = setInterval(() => {
+    const now = Date.now();
     connections.forEach((connection, ws) => {
       if (!connection.isAlive) {
         ws.terminate();
+        return;
+      }
+      if (connection.unseatedSince !== null && now - connection.unseatedSince >= limits.idleConnectionMs) {
+        logEvent('INFO', 'ws_idle_closed');
+        ws.close(CLOSE_CODE_IDLE, 'idle');
         return;
       }
       connection.isAlive = false;
@@ -215,10 +224,12 @@ export function attachCallServer(
       isAlive: true,
       windowStartedAt: Date.now(),
       messagesInWindow: 0,
+      unseatedSince: Date.now(),
       send: (message) => sendTo(ws, message),
       release: (reason) => {
         connection.room = null;
         connection.role = null;
+        connection.unseatedSince = Date.now();
         if (reason === 'evicted') ws.close(CLOSE_CODE_SEAT_TAKEN, 'seat_taken');
       },
     };
@@ -232,6 +243,7 @@ export function attachCallServer(
     const enterRoom = (room: CallRoom, role: CallRole) => {
       connection.room = room;
       connection.role = role;
+      connection.unseatedSince = null;
       room.takeSeat(role, connection);
     };
 
