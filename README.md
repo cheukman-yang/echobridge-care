@@ -1,5 +1,34 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## 環境変数
+
+`server/` が読む環境変数です。値を入れた `.env` はコミットしないでください。
+
+| 変数 | 用途 | 既定値 |
+|---|---|---|
+| `GOOGLE_GENAI_USE_VERTEXAI` | `true` でVertex AIを使う（本番の想定）。認証はサービスアカウントかADC | なし |
+| `GOOGLE_CLOUD_PROJECT` | Vertex AIのプロジェクトID | なし |
+| `GOOGLE_CLOUD_LOCATION` | Vertex AIのロケーション | `global` |
+| `GEMINI_API_KEY` | ローカル検証用のGemini Developer APIキー。架空のデータだけで使う | なし |
+| `GEMINI_MODEL` | 使うモデル。変えるときは公式の退役日を確認する | `gemini-3.5-flash-lite` |
+| `GEMINI_TIMEOUT_MS` | 返答候補と文の整形を待つ上限（ミリ秒） | `8000` |
+| `GEMINI_EXTRACTION_TIMEOUT_MS` | 通話後の予定の読み取りを待つ上限（ミリ秒） | `20000` |
+| `PORT` | WebSocketサーバーのポート | `8080` |
+
+Vertex AIの指定があれば、`GEMINI_API_KEY` は使いません。
+
+## テスト
+
+```bash
+npm test
+```
+
+```bash
+npm run test:live
+```
+
+`npm test` は認証なしで動きます。`npm run test:live` は実際のGeminiを呼ぶので、上の環境変数と課金が必要です。認証がないと失敗します。
+
 ## Getting Started
 
 First, run the development server:

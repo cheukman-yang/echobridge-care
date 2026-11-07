@@ -1,0 +1,119 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildCalendarUrl,
+  formatTokyoNow,
+  isReadyForCalendar,
+  sanitizeAppointment,
+  tokyoToday,
+} from '@/lib/appointment';
+import type { AppointmentDraft } from '@/lib/callProtocol';
+
+const DEFAULTS = { title: '内科の予約', location: 'ひまわり医院 (受付)' };
+const TODAY = '2026-11-07';
+
+const raw = {
+  title: '内科 初診予約',
+  date: '2026-11-12',
+  startTime: '14:30',
+  endTime: '15:00',
+  details: '持ち物: お薬手帳',
+};
+
+describe('日本時間の扱い', () => {
+  it('UTCの夜でも日本の日付を返す', () => {
+    expect(tokyoToday(new Date('2026-11-07T15:30:00Z'))).toBe('2026-11-08');
+  });
+
+  it('現在日時に曜日とタイムゾーンを含める', () => {
+    expect(formatTokyoNow(new Date('2026-11-07T01:00:00Z'))).toBe('2026-11-07(土) 10:00 Asia/Tokyo');
+  });
+});
+
+describe('sanitizeAppointment', () => {
+  it('正しい値はそのまま使う', () => {
+    expect(sanitizeAppointment(raw, DEFAULTS, TODAY)).toEqual({
+      title: '内科 初診予約',
+      date: '2026-11-12',
+      startTime: '14:30',
+      endTime: '15:00',
+      location: 'ひまわり医院 (受付)',
+      details: '持ち物: お薬手帳',
+    });
+  });
+
+  it('当日の予定は有効', () => {
+    expect(sanitizeAppointment({ ...raw, date: TODAY }, DEFAULTS, TODAY).date).toBe(TODAY);
+  });
+
+  it.each([
+    ['存在しない日付', '2026-02-30'],
+    ['過去の日付', '2026-11-06'],
+    ['形式違い', '11月12日'],
+  ])('%sは要確認にする', (_, date) => {
+    expect(sanitizeAppointment({ ...raw, date }, DEFAULTS, TODAY).date).toBeNull();
+  });
+
+  it('不正な時刻は要確認にする', () => {
+    const result = sanitizeAppointment({ ...raw, startTime: '25:00' }, DEFAULTS, TODAY);
+
+    expect(result.startTime).toBeNull();
+    expect(result.endTime).toBeNull();
+  });
+
+  it('開始より前の終了時刻は採用しない', () => {
+    expect(sanitizeAppointment({ ...raw, endTime: '14:00' }, DEFAULTS, TODAY).endTime).toBeNull();
+  });
+
+  it('名前がなければ用件を使い、メモは空にする', () => {
+    const result = sanitizeAppointment({ ...raw, title: null, details: null }, DEFAULTS, TODAY);
+
+    expect(result.title).toBe('内科の予約');
+    expect(result.details).toBe('');
+  });
+});
+
+describe('Googleカレンダーへの受け渡し', () => {
+  const draft: AppointmentDraft = {
+    title: '内科 初診予約',
+    date: '2026-11-12',
+    startTime: '14:30',
+    endTime: null,
+    location: 'ひまわり医院 (受付)',
+    details: '持ち物: お薬手帳',
+  };
+
+  it('日付か開始時刻がなければ進めない', () => {
+    expect(isReadyForCalendar({ ...draft, date: null })).toBe(false);
+    expect(isReadyForCalendar({ ...draft, startTime: null })).toBe(false);
+    expect(isReadyForCalendar(draft)).toBe(true);
+  });
+
+  function paramsFor(appointment: AppointmentDraft) {
+    if (!isReadyForCalendar(appointment)) throw new Error('not ready');
+    return new URL(buildCalendarUrl(appointment)).searchParams;
+  }
+
+  it('日本時間を明示し、日本語を崩さない', () => {
+    const params = paramsFor(draft);
+
+    expect(params.get('ctz')).toBe('Asia/Tokyo');
+    expect(params.get('text')).toBe('内科 初診予約');
+    expect(params.get('details')).toBe('持ち物: お薬手帳');
+  });
+
+  it('終了時刻が不明なら開始の1時間後にする', () => {
+    expect(paramsFor(draft).get('dates')).toBe('20261112T143000/20261112T153000');
+  });
+
+  it('本人が入れた終了時刻を使う', () => {
+    expect(paramsFor({ ...draft, endTime: '14:45' }).get('dates')).toBe(
+      '20261112T143000/20261112T144500',
+    );
+  });
+
+  it('日付をまたがない', () => {
+    expect(paramsFor({ ...draft, startTime: '23:30' }).get('dates')).toBe(
+      '20261112T233000/20261112T235900',
+    );
+  });
+});
