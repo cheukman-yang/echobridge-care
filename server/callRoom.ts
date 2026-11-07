@@ -24,7 +24,7 @@ import type {
 import type { AiAssistant } from './geminiService';
 
 interface SpeechResult {
-  results: { alternatives: { transcript: string }[] }[];
+  results: { alternatives: { transcript: string }[]; isFinal?: boolean }[];
 }
 
 /** 音声認識ストリームのうち、ここで使う部分。 */
@@ -34,7 +34,67 @@ export interface RecognizeStream {
   end(): unknown;
   on(event: 'data', listener: (data: SpeechResult) => void): this;
   on(event: 'error', listener: (error: Error) => void): this;
+  on(event: 'end', listener: () => void): this;
   removeAllListeners(event: string): this;
+}
+
+/**
+ * 話し終えてから、最終の認識結果を待つ上限。
+ * STTは送信を閉じた後に最終結果を返すので、待たないと文末が欠ける。届かなければ途中の結果で確定する。
+ */
+export const FINAL_TRANSCRIPT_WAIT_MS = 2_000;
+
+/**
+ * 1回の発話の認識結果。
+ * 間を置いて話すとSTTは前半を確定して次の結果を始めるので、確定した部分を積み上げ、途中の部分だけを置き換える。
+ */
+class SpeechCapture {
+  private finalText = '';
+  private interimText = '';
+
+  apply(data: SpeechResult): void {
+    if (data.results.length === 0) return;
+    let interim = '';
+    for (const result of data.results) {
+      const transcript = result.alternatives[0]?.transcript ?? '';
+      if (result.isFinal) {
+        this.finalText += transcript;
+      } else {
+        interim += transcript;
+      }
+    }
+    this.interimText = interim;
+  }
+
+  get text(): string {
+    return (this.finalText + this.interimText).trim();
+  }
+
+  get hasInterim(): boolean {
+    return this.interimText.trim() !== '';
+  }
+}
+
+/** 送信を閉じ、残りの認識結果が届くのを待つ。エラーや時間切れでも、それまでの結果で進める。 */
+function settleRecognition(stream: RecognizeStream, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ended: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stream.removeAllListeners('data');
+      stream.removeAllListeners('error');
+      stream.removeAllListeners('end');
+      // 閉じる途中のエラーでプロセスが落ちないよう、リスナーを残す。
+      stream.on('error', () => {});
+      resolve(ended);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    stream.on('end', () => finish(true));
+    stream.on('error', () => finish(false));
+    stream.end();
+  });
 }
 
 export interface SpeechRecognizer {
@@ -156,7 +216,7 @@ export class CallRoom {
   private intent: string;
   private turns: CallTurn[] = [];
   private nextSeq = 1;
-  private hospitalTranscript = '';
+  private speechCapture: SpeechCapture | null = null;
   private isHospitalRecording = false;
   private isPatientSpeaking = false;
   private recognizeStream: RecognizeStream | null = null;
@@ -250,7 +310,7 @@ export class CallRoom {
   }
 
   startRecording(): void {
-    this.hospitalTranscript = '';
+    this.speechCapture = new SpeechCapture();
     this.isHospitalRecording = this.openRecognitionStream();
     // 画面はこの配信を受け付けの合図にして、届くまで録音中と表示しない。
     if (this.isHospitalRecording) {
@@ -262,6 +322,7 @@ export class CallRoom {
 
   stopRecording(): void {
     this.isHospitalRecording = false;
+    this.speechCapture = null;
     this.closeRecognitionStream();
     this.broadcast({ type: 'hospital_speaking_stop' });
   }
@@ -273,11 +334,27 @@ export class CallRoom {
   }
 
   async finishHospitalSpeech(): Promise<void> {
+    const capture = this.speechCapture;
+    const stream = this.recognizeStream;
+    this.speechCapture = null;
+    this.recognizeStream = null;
     this.isHospitalRecording = false;
-    this.closeRecognitionStream();
 
-    const utterance = this.hospitalTranscript.trim();
-    this.hospitalTranscript = '';
+    if (stream) {
+      const startedAt = Date.now();
+      const ended = await settleRecognition(stream, FINAL_TRANSCRIPT_WAIT_MS);
+      // 本文は残さない。待ち時間と、途中の結果のまま確定したかだけを記録する。
+      logEvent('INFO', 'stt_settled', {
+        callId: this.id,
+        waitMs: Date.now() - startedAt,
+        ended,
+        usedInterim: capture?.hasInterim ?? false,
+      });
+    }
+    // 待っている間に通話が終わったら、発話として扱わない。
+    if (this.isClosed || this.phase !== 'connected') return;
+
+    const utterance = capture?.text ?? '';
 
     if (!utterance) {
       this.broadcast({ type: 'hospital_speaking_stop' });
@@ -361,7 +438,7 @@ export class CallRoom {
     this.phase = 'ending';
     this.isHospitalRecording = false;
     this.closeRecognitionStream();
-    this.hospitalTranscript = '';
+    this.speechCapture = null;
     this.discardSuggestions();
     this.isPatientSpeaking = false;
     this.broadcast({ type: 'call_ending' });
@@ -405,7 +482,7 @@ export class CallRoom {
     this.invite = null;
     this.intent = '';
     this.turns = [];
-    this.hospitalTranscript = '';
+    this.speechCapture = null;
     this.suggestions = null;
     this.appointment = null;
     this.onClosed(this);
@@ -473,7 +550,7 @@ export class CallRoom {
   /** 録音中に認識が止まったら、話し続けて音声を失わないよう本人に知らせる。途中の文は確定しない。 */
   private abortRecording(reason: RecordingFailureReason): void {
     this.isHospitalRecording = false;
-    this.hospitalTranscript = '';
+    this.speechCapture = null;
     this.closeRecognitionStream();
     this.sendTo('hospital', { type: 'hospital_recording_failed', reason });
     this.broadcast({ type: 'hospital_speaking_stop' });
@@ -482,10 +559,14 @@ export class CallRoom {
   /** 認識ストリームを開く。開けたかどうかを返す。 */
   private openRecognitionStream(): boolean {
     this.closeRecognitionStream();
+    // 開き直しても同じ発話の結果に積み上げる。
+    const capture = this.speechCapture;
     try {
-      this.recognizeStream = this.deps.speech
+      const stream: RecognizeStream = this.deps.speech
         .createStream()
         .on('error', (error: Error) => {
+          // 話し終えて結果を待っているストリームの失敗は、settleRecognition が受け取る。
+          if (stream !== this.recognizeStream) return;
           if (error.message?.includes('Long duration elapsed without audio')) {
             if (this.isHospitalRecording && !this.openRecognitionStream()) {
               this.abortRecording('stream_failed');
@@ -495,7 +576,8 @@ export class CallRoom {
           logEvent('ERROR', 'stt_stream_failed', { callId: this.id, errorName: error.name });
           this.abortRecording('stream_failed');
         })
-        .on('data', (data: SpeechResult) => this.handleSpeechData(data));
+        .on('data', (data: SpeechResult) => this.handleSpeechData(capture, data));
+      this.recognizeStream = stream;
       return true;
     } catch (error) {
       logEvent('ERROR', 'stt_setup_failed', {
@@ -517,13 +599,13 @@ export class CallRoom {
     stream.end();
   }
 
-  private handleSpeechData(data: SpeechResult): void {
-    if (!this.isHospitalRecording) return;
-    const transcript = data.results[0]?.alternatives[0]?.transcript;
-    if (transcript) {
-      this.hospitalTranscript = transcript;
-      this.broadcast({ type: 'transcript_interim', text: transcript });
-    }
+  /** 話し終えた後に届いた結果も発話には加える。画面へ送るのは録音中の発話だけ。 */
+  private handleSpeechData(capture: SpeechCapture | null, data: SpeechResult): void {
+    if (!capture) return;
+    capture.apply(data);
+    if (!this.isHospitalRecording || capture !== this.speechCapture) return;
+    const text = capture.text;
+    if (text) this.broadcast({ type: 'transcript_interim', text });
   }
 
   /**

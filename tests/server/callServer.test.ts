@@ -217,6 +217,55 @@ describe('attachCallServer', () => {
       expect(() => closing.emit('error', new Error('late failure'))).not.toThrow();
     });
 
+    it('話し終えた後に届いた最終結果で発話を確定する', async () => {
+      const models = createFakeModels(() => jsonReply(THREE_SUGGESTIONS));
+      const { patient, hospital, stream } = await start(models);
+      hospital.send({ type: 'hospital_speaking_start' });
+      await hospital.waitFor('hospital_speaking_start');
+      stream().speak('明日の午後');
+      await patient.waitFor('transcript_interim');
+      stream().finalOnEnd = '明日の午後2時半はいかがですか';
+
+      hospital.send({ type: 'hospital_speech_end' });
+
+      expect((await patient.waitFor('transcript_final')).text).toBe('明日の午後2時半はいかがですか');
+      await patient.waitFor('suggestions');
+      expect(sentContents(models.generateContent.mock.calls[0][0])).toContain('2時半はいかがですか');
+    });
+
+    it('間を置いた発話は、確定した前半を残してつなげる', async () => {
+      const { patient, hospital, stream } = await start(createFakeModels(() => jsonReply(THREE_SUGGESTIONS)));
+      hospital.send({ type: 'hospital_speaking_start' });
+      await hospital.waitFor('hospital_speaking_start');
+      stream().speak('明日の午後は埋まっております', true);
+      stream().speak(' 明後日の10時でしたら');
+      await patient.waitFor('transcript_interim', 2);
+      stream().finalOnEnd = ' 明後日の10時でしたらいかがでしょうか';
+
+      hospital.send({ type: 'hospital_speech_end' });
+
+      expect(patient.all('transcript_interim').at(-1)?.text).toBe('明日の午後は埋まっております 明後日の10時でしたら');
+      expect((await patient.waitFor('transcript_final')).text).toBe(
+        '明日の午後は埋まっております 明後日の10時でしたらいかがでしょうか',
+      );
+    });
+
+    it('最終結果が返らなくても、待ちすぎずに途中の結果で確定する', async () => {
+      const { patient, hospital, stream } = await start(createFakeModels(() => jsonReply(THREE_SUGGESTIONS)));
+      hospital.send({ type: 'hospital_speaking_start' });
+      await hospital.waitFor('hospital_speaking_start');
+      stream().endsOnEnd = false;
+      stream().speak('明日の十時で');
+      await patient.waitFor('transcript_interim');
+      const releasedAt = Date.now();
+
+      hospital.send({ type: 'hospital_speech_end' });
+
+      const final = await patient.waitFor('transcript_final', 1, 4000);
+      expect(final.text).toBe('明日の十時で');
+      expect(Date.now() - releasedAt).toBeLessThan(3000);
+    });
+
     it('発話が空なら候補を作らない', async () => {
       const models = createFakeModels(() => jsonReply(THREE_SUGGESTIONS));
       const { hospital } = await start(models);

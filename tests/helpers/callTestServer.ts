@@ -60,7 +60,7 @@ export class TestClient {
   }
 
   /** 指定の種類が count 件届くまで待つ。 */
-  waitFor<T extends MessageType>(type: T, count = 1): Promise<MessageOf<T>> {
+  waitFor<T extends MessageType>(type: T, count = 1, timeoutMs = 2000): Promise<MessageOf<T>> {
     return new Promise((resolve, reject) => {
       const check = () => {
         const found = this.all(type);
@@ -73,7 +73,7 @@ export class TestClient {
       const timer = setTimeout(() => {
         this.listeners.delete(check);
         reject(new Error(`timed out waiting for ${type}`));
-      }, 2000);
+      }, timeoutMs);
       this.listeners.add(check);
       check();
     });
@@ -97,6 +97,10 @@ export class TestClient {
 export class FakeRecognizeStream extends EventEmitter {
   writable = true;
   written: Buffer[] = [];
+  /** 送信を閉じた後に返す最終結果。実際のSTTと同じく、'end' の前に届ける。 */
+  finalOnEnd: string | null = null;
+  /** false なら、送信を閉じても 'end' を出さない（結果が返ってこない場合）。 */
+  endsOnEnd = true;
 
   write(chunk: Buffer) {
     this.written.push(chunk);
@@ -104,11 +108,17 @@ export class FakeRecognizeStream extends EventEmitter {
   }
 
   end() {
+    if (!this.writable) return;
     this.writable = false;
+    if (!this.endsOnEnd) return;
+    setImmediate(() => {
+      if (this.finalOnEnd !== null) this.speak(this.finalOnEnd, true);
+      this.emit('end');
+    });
   }
 
-  speak(transcript: string) {
-    this.emit('data', { results: [{ alternatives: [{ transcript }] }] });
+  speak(transcript: string, isFinal = false) {
+    this.emit('data', { results: [{ alternatives: [{ transcript }], isFinal }] });
   }
 }
 
