@@ -39,6 +39,26 @@ Vertex AIの指定があれば、`GEMINI_API_KEY` は使いません。
 
 `--max-instances=1` は上限を一時的に超える場合があり、インスタンスが停止することもあります。そのときの通話は続けられず、「通話が見つかりません」と表示されます。複数インスタンスで動かすには、Memorystore for Redis の Pub/Sub や Firestore で状態を共有する必要があります。
 
+### 本番の構成
+
+本番（`NODE_ENV=production`）では、`npm start`（`server/index.ts`）が画面と通話のWebSocketを同じポートで配ります。Cloud Runは1サービスで、画面は同一オリジンの `/ws/call` へつなぎます。開発時は従来どおり `npm run dev` と `npm run server` を別々に起動します。
+
+コンテナは `Dockerfile` で作ります。認証はCloud Runのサービスアカウント（ADC）を使い、鍵や `.env` はイメージに入れません。SIGTERMを受けると、通話中の画面に終了を知らせてから止まります。
+
+| 必要なもの | 内容 |
+|---|---|
+| API | Cloud Run Admin API、Artifact Registry API、Vertex AI API、Cloud Speech-to-Text API |
+| 実行用サービスアカウント | `roles/aiplatform.user`（Gemini） |
+| 公開 | `--no-invoker-iam-check`、または `allUsers` への `roles/run.invoker`。どちらも `run.services.setIamPolicy`（Cloud Run管理者）が必要 |
+| 環境変数 | `GOOGLE_GENAI_USE_VERTEXAI=true`、`GOOGLE_CLOUD_PROJECT`、`GOOGLE_CLOUD_LOCATION` |
+
+ローカルで本番の構成を試す場合:
+
+```bash
+npm run build
+NODE_ENV=production npm start
+```
+
 ## テスト
 
 ```bash

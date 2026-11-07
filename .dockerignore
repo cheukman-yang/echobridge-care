@@ -1,0 +1,28 @@
+# 秘密情報と個人用の資料をイメージに入れない。
+.env*
+!.env.example
+*.pem
+*.key
+*credentials*.json
+CLAUDE.md
+AGENTS.override.md
+local-dev/
+.claude/
+.codex/
+
+# 生成物と依存はコンテナ内で作り直す。
+node_modules/
+.next/
+out/
+build/
+coverage/
+next-env.d.ts
+*.tsbuildinfo
+
+# 実行に不要なもの
+.git/
+tests/
+*.zip
+*.log
+Dockerfile
+.dockerignore
