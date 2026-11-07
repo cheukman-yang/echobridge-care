@@ -71,6 +71,15 @@ const failureNotice = () => screen.queryByRole('alert')?.textContent ?? null;
 const startRequests = () => socket().sentOfType('hospital_speaking_start');
 const micProcessor = () => FakeAudioContext.instances.at(-1)!.processor;
 
+/**
+ * 長押しとみなされる時間だけ時計を進める。タイマーは本物のまま。
+ * 短く押すと「押して開始・もう一度押して終了」になるので、離して終える検査ではこれを使う。
+ */
+function holdLongEnough() {
+  if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(Date.now() + 1_000);
+}
+
 function speakIntoMic() {
   act(() =>
     micProcessor().onaudioprocess?.({
@@ -103,6 +112,7 @@ describe('病院の録音', () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   describe('録音できない状態を押す前に知らせる', () => {
@@ -129,7 +139,7 @@ describe('病院の録音', () => {
       receive({ type: 'speech_status', status: 'ready' });
 
       expect(ptt().disabled).toBe(false);
-      expect(pttLabel()).toBe('押している間だけ録音します');
+      expect(pttLabel()).toBe('押すと録音を始めます');
     });
 
     it('利用できないことを表示し、押すと確認し直せる', () => {
@@ -166,6 +176,7 @@ describe('病院の録音', () => {
       await renderRecordingCall();
 
       receive({ type: 'patient_speaking_status', isSpeaking: true });
+      holdLongEnough();
       fireEvent.pointerUp(ptt());
 
       expect(track.stop).toHaveBeenCalled();
@@ -221,12 +232,14 @@ describe('病院の録音', () => {
     it('指を離すとマイクを閉じ、発話の終わりを送る', async () => {
       await renderRecordingCall();
 
+      holdLongEnough();
+
       fireEvent.pointerUp(ptt());
 
       expect(track.stop).toHaveBeenCalled();
       expect(micProcessor().disconnect).toHaveBeenCalled();
       expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
-      expect(pttLabel()).toBe('押している間だけ録音します');
+      expect(pttLabel()).toBe('押すと録音を始めます');
     });
 
     it('別の端末の録音の配信ではマイクを開かない', async () => {
@@ -248,13 +261,15 @@ describe('病院の録音', () => {
 
       expect(getUserMedia).not.toHaveBeenCalled();
       expect(failureNotice()).toBe(NOT_SENT_NOTICE);
-      expect(pttLabel()).toBe('押している間だけ録音します');
+      expect(pttLabel()).toBe('押すと録音を始めます');
     });
 
     it('断られた後に指を離しても、発話の終わりを送らない', () => {
       renderConnectedCall();
       fireEvent.pointerDown(ptt());
       receive({ type: 'hospital_recording_failed', reason: 'start_failed' });
+
+      holdLongEnough();
 
       fireEvent.pointerUp(ptt());
 
@@ -268,7 +283,7 @@ describe('病院の録音', () => {
 
       expect(track.stop).toHaveBeenCalled();
       expect(failureNotice()).toBe(INTERRUPTED_NOTICE);
-      expect(pttLabel()).toBe('押している間だけ録音します');
+      expect(pttLabel()).toBe('押すと録音を始めます');
       expect(socket().sentOfType('hospital_speech_end')).toEqual([]);
     });
 
@@ -313,7 +328,7 @@ describe('病院の録音', () => {
 
       expect(alert).toHaveBeenCalledWith('マイクの使用が許可されていません。');
       expect(socket().sentOfType('hospital_speaking_stop')).toHaveLength(1);
-      expect(pttLabel()).toBe('押している間だけ録音します');
+      expect(pttLabel()).toBe('押すと録音を始めます');
     });
   });
 
@@ -325,17 +340,20 @@ describe('病院の録音', () => {
       fireEvent.pointerDown(ptt());
       await serverAccepts();
 
+      holdLongEnough();
+
       fireEvent.pointerUp(ptt());
       await act(async () => openMic({ getTracks: () => [track] }));
 
       expect(track.stop).toHaveBeenCalled();
-      expect(pttLabel()).toBe('押している間だけ録音します');
+      expect(pttLabel()).toBe('押すと録音を始めます');
       expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
     });
 
     it('受け付けの前に指を離したら、マイクを開かない', async () => {
       renderConnectedCall();
       fireEvent.pointerDown(ptt());
+      holdLongEnough();
       fireEvent.pointerUp(ptt());
 
       await serverAccepts();
@@ -826,6 +844,10 @@ describe('相手の画面の字幕と読み上げの報告', () => {
     act(() => {
       vi.advanceTimersByTime(8_000);
     });
+    // 止めた読み上げに巻き込まれないよう、少し待ってから次の文を読む。
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
 
     expect(spoken.map(({ text }) => text)).toEqual(['あいさつの文', '次の文']);
     expect(playbackReports()).toEqual([]);
@@ -854,7 +876,7 @@ describe('相手の画面の字幕と読み上げの報告', () => {
     expect(log.textContent).toContain('相手からの文です');
   });
 
-  it('スペースキーを押している間だけ録音する', async () => {
+  it('スペースキーを押し続けると、離したときに終える', async () => {
     renderConnectedCall();
 
     fireEvent.keyDown(ptt(), { key: ' ' });
@@ -864,8 +886,25 @@ describe('相手の画面の字幕と読み上げの報告', () => {
     fireEvent.keyDown(ptt(), { key: ' ', repeat: true });
     expect(startRequests()).toHaveLength(1);
 
+    holdLongEnough();
     fireEvent.keyUp(ptt(), { key: ' ' });
     expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
+  });
+
+  it('スペースキーを短く押すと録音を続け、もう一度押すと終える', async () => {
+    renderConnectedCall();
+
+    fireEvent.keyDown(ptt(), { key: ' ' });
+    await serverAccepts();
+    fireEvent.keyUp(ptt(), { key: ' ' });
+    expect(socket().sentOfType('hospital_speech_end')).toEqual([]);
+    expect(pttLabel()).toBe('録音中です。話し終えたら、もう一度押してください');
+
+    fireEvent.keyDown(ptt(), { key: ' ' });
+    fireEvent.keyUp(ptt(), { key: ' ' });
+
+    expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
+    expect(startRequests()).toHaveLength(1);
   });
 
   it('離す合図が2回届いても、発話の終わりは1回だけ送る', async () => {
@@ -873,9 +912,199 @@ describe('相手の画面の字幕と読み上げの報告', () => {
     fireEvent.pointerDown(ptt());
     await serverAccepts();
 
+    holdLongEnough();
     fireEvent.pointerUp(ptt());
     fireEvent.pointerCancel(ptt());
+    fireEvent.click(ptt());
 
     expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
+  });
+});
+
+describe('レビュー指摘: 読み上げと録音の整合、録音の操作', () => {
+  class FakeUtterance {
+    onstart: (() => void) | null = null;
+    onend: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    lang = '';
+    rate = 1;
+    constructor(public text: string) {}
+  }
+
+  let spoken: FakeUtterance[];
+  // ブラウザの読み上げが止まらず、終わりの合図も来ない状態を再現する。cancel() でだけ止まる。
+  let synthSpeaking: boolean;
+  let cancel: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    FakeAudioContext.instances = [];
+    spoken = [];
+    synthSpeaking = false;
+    window.sessionStorage.clear();
+    window.history.replaceState(null, '', '/join');
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance);
+    cancel = vi.fn(() => {
+      synthSpeaking = false;
+    });
+    vi.stubGlobal('speechSynthesis', {
+      get speaking() {
+        return synthSpeaking;
+      },
+      cancel,
+      speak: vi.fn((utterance: FakeUtterance) => {
+        spoken.push(utterance);
+        synthSpeaking = true;
+      }),
+    });
+    const track = { stop: vi.fn() };
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [track] })) },
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const finishCurrent = () =>
+    act(() => {
+      synthSpeaking = false;
+      spoken.at(-1)?.onend?.();
+    });
+
+  it('読み上げが時間切れになったら読み上げを止め、その後の録音の音声を送る', async () => {
+    vi.useFakeTimers();
+    renderConnectedCall();
+    receive({ type: 'answer_call', text: '終わりの合図が来ない文', seq: 1 });
+
+    act(() => {
+      vi.advanceTimersByTime(8_000);
+    });
+    expect(cancel).toHaveBeenCalled();
+
+    fireEvent.pointerDown(ptt());
+    await serverAccepts();
+    speakIntoMic();
+
+    expect(pttLabel()).toContain('録音中');
+    expect(socket().audio).toHaveLength(1);
+  });
+
+  it('録音中に届いた文は、録音が終わってから読み上げる', async () => {
+    renderConnectedCall();
+    fireEvent.pointerDown(ptt());
+    await serverAccepts();
+
+    receive({ type: 'patient_speech', text: '録音中に届いた文', origin: 'typed', seq: 2 });
+    speakIntoMic();
+    expect(spoken).toHaveLength(0);
+    expect(socket().audio).toHaveLength(1);
+
+    holdLongEnough();
+    fireEvent.pointerUp(ptt());
+
+    expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
+    expect(spoken.map(({ text }) => text)).toEqual(['録音中に届いた文']);
+  });
+
+  it('時間切れの後に古い文の終わりの合図が届いても、次の文の読み上げ中の状態を消さない', () => {
+    vi.useFakeTimers();
+    renderConnectedCall();
+    receive({ type: 'answer_call', text: '一つ目', seq: 1 });
+    receive({ type: 'patient_speech', text: '二つ目', origin: 'typed', seq: 2 });
+    const first = spoken[0];
+
+    act(() => {
+      vi.advanceTimersByTime(8_000);
+    });
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(spoken.map(({ text }) => text)).toEqual(['一つ目', '二つ目']);
+
+    act(() => first.onend?.());
+
+    expect(ptt().disabled).toBe(true);
+    expect(socket().sentOfType('speech_playback')).toEqual([]);
+  });
+
+  it('支援技術のクリックで録音を始め、もう一度のクリックで終える', async () => {
+    renderConnectedCall();
+
+    fireEvent.click(ptt());
+    expect(socket().sentOfType('hospital_speaking_start')).toHaveLength(1);
+    await serverAccepts();
+
+    expect(ptt().getAttribute('aria-pressed')).toBe('true');
+    expect(pttLabel()).toBe('録音中です。話し終えたら、もう一度押してください');
+
+    fireEvent.click(ptt());
+
+    expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
+    expect(ptt().getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('短く押すと録音を続け、もう一度押すと終える', async () => {
+    renderConnectedCall();
+
+    fireEvent.pointerDown(ptt());
+    await serverAccepts();
+    fireEvent.pointerUp(ptt());
+    fireEvent.click(ptt());
+
+    expect(socket().sentOfType('hospital_speech_end')).toEqual([]);
+    expect(ptt().getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.pointerDown(ptt());
+    fireEvent.pointerUp(ptt());
+    fireEvent.click(ptt());
+
+    expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
+    expect(socket().sentOfType('hospital_speaking_start')).toHaveLength(1);
+  });
+
+  it('押し続けてから離すと、その時点で終える', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    renderConnectedCall();
+
+    fireEvent.pointerDown(ptt());
+    await serverAccepts();
+    vi.setSystemTime(Date.now() + 1_000);
+    fireEvent.pointerUp(ptt());
+
+    expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
+  });
+
+  it('長い認識途中の文でも、録音の操作欄には末尾だけを短く出す', async () => {
+    renderConnectedCall();
+    fireEvent.click(ptt());
+    await serverAccepts();
+
+    receive({ type: 'transcript_interim', text: `${'あ'.repeat(200)}最後の言葉` });
+
+    const live = screen.getByTestId('ptt-live').textContent ?? '';
+    expect(live.length).toBeLessThanOrEqual(60);
+    expect(live).toContain('最後の言葉');
+    expect(screen.getByRole('region', { name: '字幕' }).textContent).toContain(
+      `${'あ'.repeat(200)}最後の言葉`,
+    );
+    expect(ptt()).toBeTruthy();
+  });
+
+  it('読み上げを終えると、次に押したときに録音できる', async () => {
+    renderConnectedCall();
+    receive({ type: 'answer_call', text: 'あいさつ', seq: 1 });
+    expect(ptt().disabled).toBe(true);
+
+    finishCurrent();
+    fireEvent.click(ptt());
+
+    expect(socket().sentOfType('hospital_speaking_start')).toHaveLength(1);
   });
 });

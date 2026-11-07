@@ -50,6 +50,21 @@ function readingWatchdogMs(text: string): number {
   return Math.max(8_000, text.length * 300 + 4_000);
 }
 
+/** 時間切れで読み上げを止めた後、次の文を読むまでの間。止める処理に次の文が巻き込まれないようにする。 */
+const RESUME_AFTER_CANCEL_MS = 300;
+
+/** これより短く押したら「押して開始・もう一度押して終了」、長く押したら離したときに終える。 */
+const HOLD_THRESHOLD_MS = 400;
+
+/** 押して開始したまま止め忘れたときに、録音を終える上限。 */
+const MAX_LATCHED_RECORDING_MS = 60_000;
+
+/** 押す・離す・キーの操作の直後に届くクリックは、同じ操作として扱い、二重に処理しない。 */
+const CLICK_AFTER_GESTURE_MS = 700;
+
+/** 録音の操作欄に出す、認識途中の文の長さ。全文は字幕に出す。 */
+const LIVE_TAIL_LENGTH = 36;
+
 interface QueuedSpeech {
   text: string;
   /** 通話の記録にある発言の番号。自動案内にはない。 */
@@ -95,18 +110,23 @@ const RECORDING_FAILURE_LABELS: Record<RecordingFailureReason, string> = {
 function describePtt(
   isConnected: boolean,
   phase: RecordingPhase,
+  isLatched: boolean,
   isReadingAloud: boolean,
   isPatientSpeaking: boolean,
   speechStatus: SpeechStatus | null,
 ): string {
   if (!isConnected) return 'サーバーに接続していません';
-  if (phase === 'recording') return '録音中です。話し終えたら離してください';
+  if (phase === 'recording') {
+    return isLatched
+      ? '録音中です。話し終えたら、もう一度押してください'
+      : '録音中です。話し終えたら離してください';
+  }
   if (phase !== 'idle') return '録音を準備しています。まだ話さないでください';
   if (isReadingAloud) return '相手の文を読み上げています。終わってから話してください';
   if (isPatientSpeaking) return '相手が入力中です。少しお待ちください';
   if (speechStatus === 'unavailable') return '音声認識を利用できません。押すと再確認します';
   if (speechStatus !== 'ready') return '音声認識を準備しています。まだ録音できません';
-  return '押している間だけ録音します';
+  return '押すと録音を始めます';
 }
 
 function describeStatus(
@@ -141,6 +161,8 @@ export default function HospitalApp() {
   // 今読み上げている発言。字幕で強調し、その間は録音を始めない。
   const [readingSeq, setReadingSeq] = useState<number | null>(null);
   const [isReadingAloud, setIsReadingAloud] = useState(false);
+  // 押して開始した録音（もう一度押すまで続く）か。
+  const [isLatched, setIsLatched] = useState(false);
 
   const channel = useCallChannel('hospital');
 
@@ -160,6 +182,13 @@ export default function HospitalApp() {
   const speechQueueRef = useRef<QueuedSpeech[]>([]);
   const isSpeakingRef = useRef<boolean>(false);
   const readingWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 録音ボタンの操作の状態。押している途中か、押して開始した録音か、直前の操作の時刻。
+  const holdRef = useRef<'none' | 'pointer' | 'key'>('none');
+  const pressStartedAtRef = useRef(0);
+  const lastGestureAtRef = useRef(0);
+  const latchedRef = useRef(false);
+  const latchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 再接続で同じ発言を二度読まないよう、並べた最後の番号を覚える。
   const lastQueuedSeqRef = useRef(0);
   const isAudioBlockedRef = useRef(false);
@@ -194,6 +223,8 @@ export default function HospitalApp() {
 
   const processSpeechQueue = useCallback(function processNext() {
     if (isSpeakingRef.current || isAudioBlockedRef.current || speechQueueRef.current.length === 0) return;
+    // 録音中は読み上げない。声が重なるうえ、読み上げ中の音声は送らないので、話した内容が欠ける。
+    if (recordingPhaseRef.current !== 'idle' || resumeTimerRef.current) return;
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
 
     const next = speechQueueRef.current.shift();
@@ -214,12 +245,27 @@ export default function HospitalApp() {
       if (status) reportPlayback(next.seq, status);
       processNext();
     };
-    utterance.onstart = () => reportPlayback(next.seq, 'started');
+    utterance.onstart = () => {
+      if (!finished) reportPlayback(next.seq, 'started');
+    };
     utterance.onend = () => finish('ended');
     utterance.onerror = () => finish('failed');
-    // 終わりの合図が来なくても先へ進む。聞けたかどうかは分からないので、結果は知らせない。
+    // 終わりの合図が来ないときは、読み上げを実際に止めてから先へ進む。
+    // 止めないとブラウザは読み上げ中のままで、次の文が始まらず、録音の音声も捨てられる。
+    // 聞けたかどうかは分からないので、結果は知らせない。止めたことで届く合図は、finished で無視する。
     clearReadingWatchdog();
-    readingWatchdogRef.current = setTimeout(() => finish(null), readingWatchdogMs(next.text));
+    readingWatchdogRef.current = setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      readingWatchdogRef.current = null;
+      window.speechSynthesis.cancel();
+      setReading(false, null);
+      markSpoken(next.seq);
+      resumeTimerRef.current = setTimeout(() => {
+        resumeTimerRef.current = null;
+        processNext();
+      }, RESUME_AFTER_CANCEL_MS);
+    }, readingWatchdogMs(next.text));
 
     window.speechSynthesis.speak(utterance);
   }, [clearReadingWatchdog, markSpoken, reportPlayback, setReading]);
@@ -236,6 +282,10 @@ export default function HospitalApp() {
   const clearSpeechQueue = useCallback(() => {
     speechQueueRef.current = [];
     clearReadingWatchdog();
+    if (resumeTimerRef.current) {
+      clearTimeout(resumeTimerRef.current);
+      resumeTimerRef.current = null;
+    }
     setReading(false, null);
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
@@ -338,7 +388,16 @@ export default function HospitalApp() {
     }
 
     setRecordingPhase('idle');
-  }, [setRecordingPhase]);
+    holdRef.current = 'none';
+    latchedRef.current = false;
+    setIsLatched(false);
+    if (latchTimerRef.current) {
+      clearTimeout(latchTimerRef.current);
+      latchTimerRef.current = null;
+    }
+    // 録音中に届いて待たせていた文を読む。
+    processSpeechQueue();
+  }, [processSpeechQueue, setRecordingPhase]);
 
   const beginCapture = useCallback(async () => {
     captureAttemptRef.current += 1;
@@ -362,9 +421,8 @@ export default function HospitalApp() {
       processorRef.current = processor;
 
       processor.onaudioprocess = (e) => {
-        if (typeof window !== 'undefined' && window.speechSynthesis && window.speechSynthesis.speaking) {
-          return;
-        }
+        // この画面が読み上げている間は送らない。ブラウザの speaking は止まった後も残ることがあるので使わない。
+        if (isSpeakingRef.current) return;
 
         const inputData = e.inputBuffer.getChannelData(0);
         const outputData = new Int16Array(inputData.length);
@@ -589,23 +647,58 @@ export default function HospitalApp() {
   const isRecording = recordingPhase === 'recording';
 
   // マイクを開くのはサーバーが受け付けた後。使えないときに許可を求めず、音声も送らない。
-  const startRecording = () => {
-    if (recordingPhaseRef.current !== 'idle' || !canStartRecording || isSpeakingRef.current) return;
+  const startRecording = (): boolean => {
+    if (recordingPhaseRef.current !== 'idle' || !canStartRecording || isSpeakingRef.current) return false;
     setRecordingFailure(null);
     setRecordingPhase('awaiting_server');
-    if (!channel.send({ type: 'hospital_speaking_start' })) setRecordingPhase('idle');
+    if (!channel.send({ type: 'hospital_speaking_start' })) {
+      setRecordingPhase('idle');
+      return false;
+    }
+    return true;
   };
 
-  // 離す操作は1回の押下で何度も届くことがある（離す・捕捉の解除）。2回目は何もしない。
+  // 終える合図は1回の操作で何度も届くことがある（離す・捕捉の解除・クリック）。2回目は何もしない。
   const stopRecording = () => {
     if (recordingPhaseRef.current === 'idle') return;
     releaseMic();
     channel.send({ type: 'hospital_speech_end' });
   };
 
+  /** 押して開始した録音にする。止め忘れても上限の時間で終える。 */
+  const latchRecording = () => {
+    latchedRef.current = true;
+    setIsLatched(true);
+    if (latchTimerRef.current) clearTimeout(latchTimerRef.current);
+    latchTimerRef.current = setTimeout(stopRecording, MAX_LATCHED_RECORDING_MS);
+  };
+
+  /** 押す操作の始まり。録音中なら「もう一度押した」ので終える。 */
+  const beginPress = (source: 'pointer' | 'key'): boolean => {
+    lastGestureAtRef.current = Date.now();
+    if (recordingPhaseRef.current !== 'idle') {
+      if (holdRef.current === 'none') stopRecording();
+      return false;
+    }
+    if (!startRecording()) return false;
+    holdRef.current = source;
+    pressStartedAtRef.current = Date.now();
+    return true;
+  };
+
+  /** 押す操作の終わり。長く押していたら終え、短ければ押して開始した録音として続ける。 */
+  const endPress = (source: 'pointer' | 'key') => {
+    lastGestureAtRef.current = Date.now();
+    if (holdRef.current !== source) return;
+    holdRef.current = 'none';
+    if (recordingPhaseRef.current === 'idle') return;
+    if (Date.now() - pressStartedAtRef.current >= HOLD_THRESHOLD_MS) stopRecording();
+    else latchRecording();
+  };
+
   const onPttPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
-    startRecording();
+    if (!beginPress('pointer')) return;
     // 指がボタンの外へずれても、離すまで録音を続ける。捕捉できない環境でも録音は止めない。
     try {
       event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -615,14 +708,35 @@ export default function HospitalApp() {
   const onPttKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== ' ' && event.key !== 'Enter') return;
     event.preventDefault();
-    if (!event.repeat) startRecording();
+    if (!event.repeat) beginPress('key');
   };
 
   const onPttKeyUp = (event: React.KeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== ' ' && event.key !== 'Enter') return;
     event.preventDefault();
-    stopRecording();
+    endPress('key');
   };
+
+  /**
+   * 押す・離すを伴わないクリック（読み上げソフトや音声操作、スイッチ操作など）。
+   * 押して開始し、もう一度押して終える。
+   */
+  const onPttClick = () => {
+    if (Date.now() - lastGestureAtRef.current < CLICK_AFTER_GESTURE_MS) return;
+    if (recordingPhaseRef.current === 'idle') {
+      if (startRecording()) latchRecording();
+    } else {
+      stopRecording();
+    }
+  };
+
+  // キーを押したままフォーカスが外れると、離した合図が届かない。押して開始した録音は続ける。
+  const onPttBlur = () => {
+    if (holdRef.current === 'key') stopRecording();
+  };
+
+  const liveTail =
+    liveText.length > LIVE_TAIL_LENGTH ? `…${liveText.slice(-(LIVE_TAIL_LENGTH - 1))}` : liveText;
 
   const connectionNotice = !isConnected && callState !== 'idle'
     ? RECONNECTING_NOTICE
@@ -797,10 +911,18 @@ export default function HospitalApp() {
                     ),
                   )}
                 </ol>
-                {captions.length === 0 && (
+                {captions.length === 0 && !liveText && (
                   <p className="rounded-xl border border-dashed border-line-strong px-4 py-4 text-[14px] text-ink-2">
                     相手の文と、あなたの話した内容が、ここに文字で表示されます。
                   </p>
+                )}
+                {liveText && (
+                  <div className="mt-5 flex flex-col items-end gap-1.5">
+                    <p className="px-1 text-[13px] font-bold text-ink">あなた（認識中）</p>
+                    <p className="max-w-[min(40rem,88%)] rounded-xl border border-dashed border-line-strong bg-surface px-4 py-3 text-[16px] leading-(--leading-talk) text-ink-2 text-pretty break-words select-text">
+                      {liveText}
+                    </p>
+                  </div>
                 )}
                 <div ref={captionsEndRef} />
               </div>
@@ -811,21 +933,26 @@ export default function HospitalApp() {
               className="shrink-0 border-t border-line bg-surface px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] lg:flex lg:flex-col lg:justify-center lg:border-t-0 lg:px-6 lg:py-6"
             >
               <div className="mx-auto w-full max-w-md space-y-3">
-                {(isRecording || liveText) && (
-                  <p className="min-h-6 text-[15px] leading-relaxed text-ink-2 break-words">
-                    {liveText ? `認識中：${liveText}` : '認識中…'}
-                  </p>
-                )}
+                {/* 長い文で録音ボタンが押し出されないよう、高さを固定して末尾だけを出す。全文は字幕にある。 */}
+                <p
+                  data-testid="ptt-live"
+                  aria-hidden
+                  className="line-clamp-2 h-12 text-[15px] leading-6 text-ink-2 break-all"
+                >
+                  {liveText ? `認識中：${liveTail}` : isRecording ? '認識中…' : ''}
+                </p>
                 <button
                   type="button"
                   onPointerDown={onPttPointerDown}
-                  onPointerUp={stopRecording}
-                  onPointerCancel={stopRecording}
+                  onPointerUp={() => endPress('pointer')}
+                  onPointerCancel={() => endPress('pointer')}
                   onKeyDown={onPttKeyDown}
                   onKeyUp={onPttKeyUp}
-                  onBlur={stopRecording}
+                  onClick={onPttClick}
+                  onBlur={onPttBlur}
                   onContextMenu={(event) => event.preventDefault()}
                   disabled={recordingPhase === 'idle' && !canStartRecording}
+                  aria-pressed={recordingPhase !== 'idle'}
                   aria-describedby="ptt-hint"
                   className={cx(
                     'flex min-h-28 w-full touch-none flex-col items-center justify-center gap-2 rounded-2xl text-[18px] font-bold transition-colors duration-150 disabled:cursor-not-allowed lg:min-h-40',
@@ -842,15 +969,15 @@ export default function HospitalApp() {
                   押して話す
                 </button>
                 <p role="status" className="text-center text-[15px] font-bold text-ink">
-                  {describePtt(isConnected, recordingPhase, isReadingAloud, isPatientSpeaking, speechStatus)}
+                  {describePtt(isConnected, recordingPhase, isLatched, isReadingAloud, isPatientSpeaking, speechStatus)}
                 </p>
                 {recordingFailure && (
                   <p role="alert" className="text-center text-[15px] font-bold text-danger">
                     {RECORDING_FAILURE_LABELS[recordingFailure]}
                   </p>
                 )}
-                <p id="ptt-hint" className="hidden text-center text-[13px] leading-relaxed text-ink-2 lg:block">
-                  キーボードでは、スペースキーを押している間だけ録音します。
+                <p id="ptt-hint" className="text-center text-[13px] leading-relaxed text-ink-2">
+                  押して開始し、もう一度押すと送ります。押し続けて話し、離して送ることもできます。
                 </p>
               </div>
             </section>
