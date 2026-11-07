@@ -5,53 +5,9 @@ import PatientApp from '@/app/page';
 import type { AiMeta } from '@/lib/aiMeta';
 import { buildGreeting } from '@/lib/callProtocol';
 import type { AppointmentDraft, ServerMessage } from '@/lib/callProtocol';
+import { FakeWebSocket } from '../helpers/fakeWebSocket';
 
 const GEMINI: AiMeta = { source: 'gemini', model: 'test-model' };
-
-class FakeWebSocket {
-  static readonly CONNECTING = 0;
-  static readonly OPEN = 1;
-  static readonly CLOSING = 2;
-  static readonly CLOSED = 3;
-  static instances: FakeWebSocket[] = [];
-
-  readyState = FakeWebSocket.CONNECTING;
-  sent: Record<string, unknown>[] = [];
-  onopen: (() => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  onmessage: ((event: { data: string }) => void) | null = null;
-
-  constructor(public url: string) {
-    FakeWebSocket.instances.push(this);
-  }
-
-  send(data: string) {
-    this.sent.push(JSON.parse(data));
-  }
-
-  close() {
-    this.readyState = FakeWebSocket.CLOSED;
-  }
-
-  open() {
-    this.readyState = FakeWebSocket.OPEN;
-    this.onopen?.();
-  }
-
-  drop() {
-    this.readyState = FakeWebSocket.CLOSED;
-    this.onclose?.();
-  }
-
-  receive(message: ServerMessage) {
-    this.onmessage?.({ data: JSON.stringify(message) });
-  }
-
-  sentOfType(type: string) {
-    return this.sent.filter((message) => message.type === type);
-  }
-}
 
 function socket() {
   return FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
@@ -542,5 +498,37 @@ describe('通話後の予定の確認', () => {
     const details = screen.getByText('通話の記録を見る').closest('details');
 
     expect(within(details as HTMLElement).getByText(/水曜の10時です/)).toBeTruthy();
+  });
+});
+
+describe('音声認識を使えないときの表示', () => {
+  const notice = () => screen.queryByText('音声認識を利用できません。相手の発話を文字にできません。');
+
+  it('発信前から本人に知らせる', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+
+    receive({ type: 'speech_status', status: 'unavailable' });
+
+    expect(notice()).toBeTruthy();
+  });
+
+  it('回復したら表示を消す', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+    receive({ type: 'speech_status', status: 'unavailable' });
+
+    receive({ type: 'speech_status', status: 'ready' });
+
+    expect(notice()).toBeNull();
+  });
+
+  it('確認中は表示しない', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+
+    receive({ type: 'speech_status', status: 'checking' });
+
+    expect(notice()).toBeNull();
   });
 });

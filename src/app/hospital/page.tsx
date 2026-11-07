@@ -2,11 +2,37 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Phone, Mic, RotateCcw } from 'lucide-react';
+import type { RecordingFailureReason, ServerMessage, SpeechStatus } from '@/lib/callProtocol';
+
+/** 押してから、サーバーの受け付けとマイクの準備がそろうまでは録音中と表示しない。 */
+type RecordingPhase = 'idle' | 'awaiting_server' | 'opening_mic' | 'recording';
+
+const RECORDING_FAILURE_LABELS: Record<RecordingFailureReason, string> = {
+  start_failed: '録音を開始できませんでした。音声は送られていません。',
+  stream_failed: '音声認識が中断しました。もう一度話してください。',
+};
+
+function describePtt(
+  isConnected: boolean,
+  phase: RecordingPhase,
+  isPatientSpeaking: boolean,
+  speechStatus: SpeechStatus | null,
+): string {
+  if (!isConnected) return 'サーバーに接続していません';
+  if (phase === 'recording') return '録音＆送信中...';
+  if (phase !== 'idle') return '録音を準備中... まだ話さないでください';
+  if (isPatientSpeaking) return '相手が発話・入力中...';
+  if (speechStatus === 'unavailable') return '音声認識を利用できません。長押しで再確認します';
+  if (speechStatus !== 'ready') return '音声認識を準備中です。まだ録音できません';
+  return '長押しで発話 (PTT)';
+}
 
 export default function HospitalApp() {
   const [isConnected, setIsConnected] = useState(false);
   const [callState, setCallState] = useState<'idle' | 'ringing' | 'connected' | 'ended'>('idle');
-  const [isRecording, setIsRecording] = useState(false);
+  const [recordingPhase, setRecordingPhaseState] = useState<RecordingPhase>('idle');
+  const [recordingFailure, setRecordingFailure] = useState<RecordingFailureReason | null>(null);
+  const [speechStatus, setSpeechStatus] = useState<SpeechStatus | null>(null);
   const [isPatientSpeaking, setIsPatientSpeaking] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -14,6 +40,10 @@ export default function HospitalApp() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
+  // WebSocketの受信処理からも最新の段階を読めるようにする。
+  const recordingPhaseRef = useRef<RecordingPhase>('idle');
+  // 開いている途中のマイクが、もう不要になったかを見分ける。
+  const captureAttemptRef = useRef(0);
 
   // 着信音用の管理Ref
   const ringtoneTimerRef = useRef<any>(null);
@@ -127,96 +157,48 @@ export default function HospitalApp() {
     } catch {}
   }, [stopRingtone]);
 
-  const connectWebSocket = useCallback(() => {
-    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
-      return;
-    }
+  const setRecordingPhase = useCallback((phase: RecordingPhase) => {
+    recordingPhaseRef.current = phase;
+    setRecordingPhaseState(phase);
+  }, []);
 
-    const ws = new WebSocket('ws://localhost:8080/ws/call');
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      setIsConnected(true);
-    };
-
-    ws.onclose = () => {
-      setIsConnected(false);
-      reconnectTimeoutRef.current = setTimeout(connectWebSocket, 1500);
-    };
-
-    ws.onerror = () => {
-      setIsConnected(false);
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'start_call') {
-          setCallState('ringing');
-          startRingtone();
-        } else if (data.type === 'answer_call') {
-          stopRingtone(); // 念のため応答メッセージ受信時にも確実に停止
-          if (data.text) queueSpeech(data.text);
-        } else if (data.type === 'patient_typing_notice') {
-          if (data.text) queueSpeech(data.text);
-        } else if (data.type === 'patient_speech') {
-          if (data.text) queueSpeech(data.text);
-        } else if (data.type === 'patient_speaking_status') {
-          setIsPatientSpeaking(data.isSpeaking);
-        } else if (data.type === 'call_ending' || data.type === 'end_call') {
-          stopRingtone();
-          clearSpeechQueue();
-          setCallState('ended');
-        } else if (data.type === 'reset_call') {
-          stopRingtone();
-          clearSpeechQueue();
-          setCallState('idle');
-          setIsRecording(false);
-          setIsPatientSpeaking(false);
-        }
-      } catch {}
-    };
-  }, [queueSpeech, startRingtone, stopRingtone]);
-
-  useEffect(() => {
-    connectWebSocket();
-    return () => {
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      stopRingtone();
-      clearSpeechQueue();
-      if (wsRef.current) wsRef.current.close();
-    };
-  }, [connectWebSocket, stopRingtone]);
-
-  const handleAnswerCall = () => {
-    stopRingtone(); // ボタン押下時に即時停止
-    setCallState('connected');
+  const sendControl = useCallback((message: { type: string }) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'answer_call' }));
+      wsRef.current.send(JSON.stringify(message));
     }
-  };
+  }, []);
 
-  const handleGlobalReset = () => {
-    stopRingtone();
-    clearSpeechQueue();
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'reset_call' }));
+  const releaseMic = useCallback(() => {
+    captureAttemptRef.current += 1;
+
+    if (processorRef.current) {
+      processorRef.current.disconnect();
+      processorRef.current = null;
     }
-    setCallState('idle');
-    setIsRecording(false);
-    setIsPatientSpeaking(false);
-  };
-
-  const startRecording = async () => {
-    if (isRecording || isSpeakingRef.current || isPatientSpeaking) return;
-    setIsRecording(true);
-
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'hospital_speaking_start' }));
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
     }
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+
+    setRecordingPhase('idle');
+  }, [setRecordingPhase]);
+
+  const beginCapture = useCallback(async () => {
+    captureAttemptRef.current += 1;
+    const attempt = captureAttemptRef.current;
+    setRecordingPhase('opening_mic');
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (attempt !== captureAttemptRef.current) {
+        // 待っている間に指を離したか、サーバーが録音を止めた。
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       mediaStreamRef.current = stream;
 
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
@@ -246,36 +228,126 @@ export default function HospitalApp() {
 
       source.connect(processor);
       processor.connect(audioContext.destination);
+      setRecordingPhase('recording');
     } catch {
+      if (attempt !== captureAttemptRef.current) return;
       alert('マイクの使用が許可されていません。');
-      setIsRecording(false);
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'hospital_speaking_stop' }));
-      }
+      releaseMic();
+      sendControl({ type: 'hospital_speaking_stop' });
     }
+  }, [releaseMic, sendControl, setRecordingPhase]);
+
+  const connectWebSocket = useCallback(() => {
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    const ws = new WebSocket('ws://localhost:8080/ws/call');
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setIsConnected(true);
+    };
+
+    ws.onclose = () => {
+      setIsConnected(false);
+      setSpeechStatus(null);
+      if (recordingPhaseRef.current !== 'idle') {
+        setRecordingFailure('stream_failed');
+        releaseMic();
+      }
+      reconnectTimeoutRef.current = setTimeout(connectWebSocket, 1500);
+    };
+
+    ws.onerror = () => {
+      setIsConnected(false);
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as ServerMessage;
+        if (data.type === 'speech_status') {
+          setSpeechStatus(data.status);
+        } else if (data.type === 'hospital_speaking_start') {
+          if (recordingPhaseRef.current === 'awaiting_server') beginCapture();
+        } else if (data.type === 'hospital_recording_failed') {
+          setRecordingFailure(data.reason);
+          releaseMic();
+        } else if (data.type === 'start_call') {
+          setRecordingFailure(null);
+          setCallState('ringing');
+          startRingtone();
+        } else if (data.type === 'answer_call') {
+          stopRingtone(); // 念のため応答メッセージ受信時にも確実に停止
+          if (data.text) queueSpeech(data.text);
+        } else if (data.type === 'patient_typing_notice') {
+          if (data.text) queueSpeech(data.text);
+        } else if (data.type === 'patient_speech') {
+          if (data.text) queueSpeech(data.text);
+        } else if (data.type === 'patient_speaking_status') {
+          setIsPatientSpeaking(data.isSpeaking);
+        } else if (data.type === 'call_ending' || data.type === 'end_call') {
+          stopRingtone();
+          clearSpeechQueue();
+          releaseMic();
+          setCallState('ended');
+        } else if (data.type === 'reset_call') {
+          stopRingtone();
+          clearSpeechQueue();
+          releaseMic();
+          setRecordingFailure(null);
+          setCallState('idle');
+          setIsPatientSpeaking(false);
+        }
+      } catch {}
+    };
+  }, [beginCapture, queueSpeech, releaseMic, startRingtone, stopRingtone]);
+
+  useEffect(() => {
+    connectWebSocket();
+    return () => {
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      stopRingtone();
+      clearSpeechQueue();
+      releaseMic();
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, [connectWebSocket, releaseMic, stopRingtone]);
+
+  const handleAnswerCall = () => {
+    stopRingtone(); // ボタン押下時に即時停止
+    setCallState('connected');
+    sendControl({ type: 'answer_call' });
+  };
+
+  const handleGlobalReset = () => {
+    stopRingtone();
+    clearSpeechQueue();
+    releaseMic();
+    setRecordingFailure(null);
+    sendControl({ type: 'reset_call' });
+    setCallState('idle');
+    setIsPatientSpeaking(false);
+  };
+
+  // 切断中は speechStatus が null になる。unavailable で押すと、サーバーが認証を確認し直す。
+  const canStartRecording =
+    !isPatientSpeaking && (speechStatus === 'ready' || speechStatus === 'unavailable');
+  const isPreparing = recordingPhase === 'awaiting_server' || recordingPhase === 'opening_mic';
+  const isRecording = recordingPhase === 'recording';
+
+  // マイクを開くのはサーバーが受け付けた後。使えないときに許可を求めず、音声も送らない。
+  const startRecording = () => {
+    if (recordingPhase !== 'idle' || !canStartRecording || isSpeakingRef.current) return;
+    setRecordingFailure(null);
+    setRecordingPhase('awaiting_server');
+    sendControl({ type: 'hospital_speaking_start' });
   };
 
   const stopRecording = () => {
-    if (!isRecording) return;
-
-    if (processorRef.current) {
-      processorRef.current.disconnect();
-      processorRef.current = null;
-    }
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
-      mediaStreamRef.current = null;
-    }
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      audioContextRef.current.close().catch(() => {});
-      audioContextRef.current = null;
-    }
-
-    setIsRecording(false);
-
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'hospital_speech_end' }));
-    }
+    if (recordingPhase === 'idle') return;
+    releaseMic();
+    sendControl({ type: 'hospital_speech_end' });
   };
 
   return (
@@ -337,11 +409,14 @@ export default function HospitalApp() {
                 onMouseLeave={stopRecording}
                 onTouchStart={startRecording}
                 onTouchEnd={stopRecording}
-                disabled={isPatientSpeaking}
+                disabled={recordingPhase === 'idle' && !canStartRecording}
+                aria-label="長押しで発話"
                 className={`w-36 h-36 rounded-full flex items-center justify-center transition-all ${
                   isRecording 
                     ? 'bg-red-500 scale-95 shadow-[0_0_35px_rgba(239,68,68,0.7)]' 
-                    : isPatientSpeaking
+                    : isPreparing
+                    ? 'bg-amber-600/70 scale-95'
+                    : !canStartRecording
                     ? 'bg-slate-700/50 opacity-40 cursor-not-allowed'
                     : 'bg-slate-700 hover:bg-slate-600 shadow-xl'
                 }`}
@@ -349,13 +424,19 @@ export default function HospitalApp() {
                 <Mic className={`w-14 h-14 ${isRecording ? 'text-white' : 'text-slate-300'}`} />
               </button>
 
-              <p className="text-slate-400 text-sm">
-                {isPatientSpeaking
-                  ? '相手が発話・入力中...'
-                  : isRecording
-                  ? '録音＆送信中...'
-                  : '長押しで発話 (PTT)'}
-              </p>
+              <div className="space-y-2">
+                <p
+                  role="status"
+                  className={`text-sm ${speechStatus === 'unavailable' ? 'text-amber-300' : 'text-slate-400'}`}
+                >
+                  {describePtt(isConnected, recordingPhase, isPatientSpeaking, speechStatus)}
+                </p>
+                {recordingFailure && (
+                  <p role="alert" className="text-sm font-semibold text-red-300">
+                    {RECORDING_FAILURE_LABELS[recordingFailure]}
+                  </p>
+                )}
+              </div>
             </div>
           )}
 

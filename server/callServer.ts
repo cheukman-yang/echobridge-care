@@ -8,7 +8,7 @@ import {
   TYPING_NOTICE_TEXT,
   buildGreeting,
 } from '../src/lib/callProtocol';
-import type { ChatTurn, ServerMessage } from '../src/lib/callProtocol';
+import type { ChatTurn, ServerMessage, SpeechStatus } from '../src/lib/callProtocol';
 import type { AiAssistant } from './geminiService';
 
 const StartCallSchema = z.object({
@@ -29,7 +29,7 @@ interface SpeechResult {
   results: { alternatives: { transcript: string }[] }[];
 }
 
-/** 音声認識ストリームのうち、ここで使う部分。作成に失敗するときは例外を投げる。 */
+/** 音声認識ストリームのうち、ここで使う部分。 */
 export interface RecognizeStream {
   writable: boolean;
   write(chunk: Buffer): unknown;
@@ -39,9 +39,17 @@ export interface RecognizeStream {
   removeAllListeners(event: string): this;
 }
 
+export interface SpeechRecognizer {
+  readonly status: SpeechStatus;
+  /** 状態が変わるたびに呼ぶ。戻り値の関数で購読をやめる。 */
+  onStatusChange(listener: (status: SpeechStatus) => void): () => void;
+  /** 認識ストリームを作る。作れないときは例外を投げる。 */
+  createStream(): RecognizeStream;
+}
+
 export interface CallServerDeps {
   ai: AiAssistant;
-  createRecognizeStream: () => RecognizeStream;
+  speech: SpeechRecognizer;
 }
 
 function logEvent(severity: 'INFO' | 'WARNING' | 'ERROR', message: string, fields = {}): void {
@@ -60,7 +68,7 @@ function logEvent(severity: 'INFO' | 'WARNING' | 'ERROR', message: string, field
  * AIの整形案は依頼した接続にだけ返すので、本人が確定するまで相手には届かない。
  */
 export function attachCallServer(server: Server, deps: CallServerDeps): WebSocketServer {
-  const { ai, createRecognizeStream } = deps;
+  const { ai, speech } = deps;
   const wss = new WebSocketServer({ server, path: '/ws/call' });
 
   const call = {
@@ -82,10 +90,17 @@ export function attachCallServer(server: Server, deps: CallServerDeps): WebSocke
     wss.clients.forEach((client) => sendTo(client, message));
   };
 
+  const stopWatchingSpeech = speech.onStatusChange((status) => {
+    logEvent('INFO', 'speech_status', { status });
+    broadcast({ type: 'speech_status', status });
+  });
+  wss.once('close', stopWatchingSpeech);
+
   wss.on('connection', (ws: WebSocket) => {
     let recognizeStream: RecognizeStream | null = null;
 
     sendTo(ws, { type: 'ai_status', ...ai.status });
+    sendTo(ws, { type: 'speech_status', status: speech.status });
 
     const stopRecognitionStream = () => {
       if (!recognizeStream) return;
@@ -106,22 +121,36 @@ export function attachCallServer(server: Server, deps: CallServerDeps): WebSocke
       }
     };
 
-    const startRecognitionStream = () => {
+    /** 録音中に認識が止まったら、話し続けて音声を失わないよう本人に知らせる。途中の文は確定しない。 */
+    const abortRecording = () => {
+      call.isHospitalRecording = false;
+      call.hospitalTranscript = '';
+      stopRecognitionStream();
+      sendTo(ws, { type: 'hospital_recording_failed', reason: 'stream_failed' });
+      broadcast({ type: 'hospital_speaking_stop' });
+    };
+
+    /** 認識ストリームを開く。開けたかどうかを返す。 */
+    const startRecognitionStream = (): boolean => {
       stopRecognitionStream();
       try {
-        recognizeStream = createRecognizeStream()
+        recognizeStream = speech
+          .createStream()
           .on('error', (error: Error) => {
             if (error.message?.includes('Long duration elapsed without audio')) {
-              if (call.isHospitalRecording) startRecognitionStream();
+              if (call.isHospitalRecording && !startRecognitionStream()) abortRecording();
               return;
             }
             logEvent('ERROR', 'stt_stream_failed', { errorName: error.name });
+            abortRecording();
           })
           .on('data', onSpeechData);
+        return true;
       } catch (error) {
         logEvent('ERROR', 'stt_setup_failed', {
           errorName: error instanceof Error ? error.name : 'unknown',
         });
+        return false;
       }
     };
 
@@ -241,10 +270,14 @@ export function attachCallServer(server: Server, deps: CallServerDeps): WebSocke
         }
 
         case 'hospital_speaking_start':
-          call.isHospitalRecording = true;
           call.hospitalTranscript = '';
-          startRecognitionStream();
-          broadcast({ type: 'hospital_speaking_start' });
+          call.isHospitalRecording = startRecognitionStream();
+          // 画面はこの配信を受け付けの合図にして、届くまで録音中と表示しない。
+          if (call.isHospitalRecording) {
+            broadcast({ type: 'hospital_speaking_start' });
+          } else {
+            sendTo(ws, { type: 'hospital_recording_failed', reason: 'start_failed' });
+          }
           break;
 
         case 'hospital_speaking_stop':

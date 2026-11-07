@@ -4,7 +4,11 @@ import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } 
 import { Phone, PhoneOff, Send, RotateCcw, Sparkles } from 'lucide-react';
 import { AppointmentReviewCard } from '@/components/AppointmentReviewCard';
 import type { TranscriptLine } from '@/components/AppointmentReviewCard';
-import { AiStatusBadge, SuggestionSourceNote } from '@/components/AiStatusBadge';
+import {
+  AiStatusBadge,
+  SpeechUnavailableNotice,
+  SuggestionSourceNote,
+} from '@/components/AiStatusBadge';
 import { PolishReviewPanel } from '@/components/PolishReviewPanel';
 import type { AiMeta, AiStatus } from '@/lib/aiMeta';
 import {
@@ -12,12 +16,7 @@ import {
   TYPING_NOTICE_TEXT,
   buildGreeting,
 } from '@/lib/callProtocol';
-import type {
-  AppointmentDraft,
-  ServerMessage,
-  SpeechOrigin,
-  SuggestionItem,
-} from '@/lib/callProtocol';
+import type { AppointmentDraft, ServerMessage, SpeechOrigin, SpeechStatus, SuggestionItem } from '@/lib/callProtocol';
 import { INITIAL_COMPOSER, composerReducer, resolveConfirmedSpeech } from '@/lib/composer';
 import type { SpeechChoice } from '@/lib/composer';
 
@@ -123,6 +122,7 @@ export default function PatientApp() {
   const [appointmentResult, setAppointmentResult] = useState<AppointmentResult | null>(null);
 
   const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
+  const [speechStatus, setSpeechStatus] = useState<SpeechStatus | null>(null);
   const [lastAi, setLastAi] = useState<AiMeta | null>(null);
   const [suggestionsAi, setSuggestionsAi] = useState<AiMeta | null>(null);
   const [composer, dispatchComposer] = useReducer(composerReducer, INITIAL_COMPOSER);
@@ -206,6 +206,8 @@ export default function PatientApp() {
       setAiStatus({ configured: data.configured, backend: data.backend, model: data.model });
       // 接続し直すと設定が変わっている場合があるので、前の接続の結果を持ち越さない。
       setLastAi(null);
+    } else if (data.type === 'speech_status') {
+      setSpeechStatus(data.status);
     } else if (data.type === 'answer_call') {
       setCallState('connected');
       setMessages([createMessage({ sender: 'patient', text: data.text, origin: 'greeting' })]);
@@ -449,6 +451,8 @@ export default function PatientApp() {
             </button>
           )}
         </header>
+
+        <SpeechUnavailableNotice status={speechStatus} />
 
         {callState === 'idle' && (
           <div className="flex-1 flex flex-col p-6 justify-center gap-4">

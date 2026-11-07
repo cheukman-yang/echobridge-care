@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createRecognizeStreamFactory } from '../../server/speechRecognizer';
+import { createSpeechRecognizer } from '../../server/speechRecognizer';
 
 function fakeClient(getClient: () => Promise<unknown>) {
   return { auth: { getClient: vi.fn(getClient) }, streamingRecognize: vi.fn(() => ({ fake: 'stream' })) };
@@ -7,18 +7,19 @@ function fakeClient(getClient: () => Promise<unknown>) {
 
 const nextTick = () => new Promise((resolve) => setTimeout(resolve));
 
-describe('createRecognizeStreamFactory', () => {
+describe('createSpeechRecognizer', () => {
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   it('認証を確認できたらストリームを作る', async () => {
     const client = fakeClient(async () => ({}));
-    const create = createRecognizeStreamFactory(client);
+    const speech = createSpeechRecognizer(client);
 
     await nextTick();
 
-    expect(create()).toEqual({ fake: 'stream' });
+    expect(speech.status).toBe('ready');
+    expect(speech.createStream()).toEqual({ fake: 'stream' });
     expect(client.streamingRecognize).toHaveBeenCalledTimes(1);
   });
 
@@ -27,41 +28,78 @@ describe('createRecognizeStreamFactory', () => {
     const client = fakeClient(async () => {
       throw new Error('Could not load the default credentials.');
     });
-    const create = createRecognizeStreamFactory(client);
+    const speech = createSpeechRecognizer(client);
 
     await nextTick();
 
-    expect(create).toThrow('speech_not_ready');
+    expect(speech.status).toBe('unavailable');
+    expect(() => speech.createStream()).toThrow('speech_not_ready');
     expect(client.streamingRecognize).not.toHaveBeenCalled();
   });
 
-  it('認証の確認が終わる前もSDKを呼ばない', () => {
+  it('認証の確認が終わる前は確認中と分かり、SDKを呼ばない', () => {
     const client = fakeClient(() => new Promise(() => {}));
-    const create = createRecognizeStreamFactory(client);
+    const speech = createSpeechRecognizer(client);
 
-    expect(create).toThrow('speech_not_ready');
+    expect(speech.status).toBe('checking');
+    expect(() => speech.createStream()).toThrow('speech_not_ready');
     expect(client.streamingRecognize).not.toHaveBeenCalled();
   });
 
-  it('認証が後から使えるようになれば、次の発話で回復する', async () => {
+  it('確認中に何度押されても、確認を重ねない', () => {
+    const client = fakeClient(() => new Promise(() => {}));
+    const speech = createSpeechRecognizer(client);
+
+    expect(() => speech.createStream()).toThrow('speech_not_ready');
+    expect(() => speech.createStream()).toThrow('speech_not_ready');
+
+    expect(client.auth.getClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('確認が終わったら状態の変化を知らせる', async () => {
+    const speech = createSpeechRecognizer(fakeClient(async () => ({})));
+    const listener = vi.fn();
+    speech.onStatusChange(listener);
+
+    await nextTick();
+
+    expect(listener.mock.calls).toEqual([['ready']]);
+  });
+
+  it('認証が後から使えるようになれば、次の発話で回復を知らせる', async () => {
     let attempts = 0;
-    const client = fakeClient(async () => {
-      attempts += 1;
-      if (attempts === 1) throw new Error('temporary failure');
-      return {};
-    });
-    const create = createRecognizeStreamFactory(client);
+    const speech = createSpeechRecognizer(
+      fakeClient(async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('temporary failure');
+        return {};
+      }),
+    );
+    await nextTick();
+    const listener = vi.fn();
+    speech.onStatusChange(listener);
+
+    expect(() => speech.createStream()).toThrow('speech_not_ready');
+    expect(speech.status).toBe('checking');
+    await nextTick();
+
+    expect(listener.mock.calls).toEqual([['checking'], ['ready']]);
+    expect(speech.createStream()).toEqual({ fake: 'stream' });
+  });
+
+  it('購読をやめたら知らせない', async () => {
+    const speech = createSpeechRecognizer(fakeClient(async () => ({})));
+    const listener = vi.fn();
+    speech.onStatusChange(listener)();
 
     await nextTick();
-    expect(create).toThrow('speech_not_ready');
-    await nextTick();
 
-    expect(create()).toEqual({ fake: 'stream' });
+    expect(listener).not.toHaveBeenCalled();
   });
 
   it('認証の失敗をログに残し、詳細は出さない', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    createRecognizeStreamFactory(
+    createSpeechRecognizer(
       fakeClient(async () => {
         throw new Error('path/to/secret.json was rejected');
       }),

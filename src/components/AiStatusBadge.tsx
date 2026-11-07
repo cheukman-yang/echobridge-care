@@ -1,6 +1,7 @@
 import { AlertTriangle, Sparkles } from 'lucide-react';
 import { AI_FAILURE_LABELS } from '@/lib/aiMeta';
 import type { AiMeta, AiStatus } from '@/lib/aiMeta';
+import type { SpeechStatus } from '@/lib/callProtocol';
 
 const PILL_BASE = 'text-[10px] font-semibold px-2 py-0.5 rounded-full border whitespace-nowrap';
 const PILL_OK = 'bg-green-500/15 text-green-300 border-green-500/40';
@@ -30,6 +31,20 @@ export function AiStatusBadge({ status, last }: { status: AiStatus | null; last:
     <span data-testid="ai-status" className={`${PILL_BASE} ${view.tone}`} title={view.title}>
       {view.label}
     </span>
+  );
+}
+
+/** 音声認識が使えないと相手の発話が文字にならないので、発信前から本人に知らせる。 */
+export function SpeechUnavailableNotice({ status }: { status: SpeechStatus | null }) {
+  if (status !== 'unavailable') return null;
+  return (
+    <div
+      role="status"
+      className="flex items-center gap-1.5 text-[11px] leading-snug text-amber-200 bg-amber-500/10 border-b border-amber-500/40 px-5 py-1.5 z-20"
+    >
+      <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+      <span>音声認識を利用できません。相手の発話を文字にできません。</span>
+    </div>
   );
 }
 

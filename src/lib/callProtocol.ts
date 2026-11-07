@@ -56,13 +56,24 @@ export interface AppointmentDraft {
   details: string;
 }
 
+/**
+ * 音声認識の準備状態。
+ * ready は認証情報が見つかったことだけを示す。権限不足などの失敗は録音を始めてから分かる。
+ */
+export type SpeechStatus = 'checking' | 'ready' | 'unavailable';
+
+/** 録音を続けられなかった理由。失敗した音声は届かないので、必ず本人に知らせる。 */
+export type RecordingFailureReason = 'start_failed' | 'stream_failed';
+
 /** サーバーからブラウザへ送るメッセージ。 */
 export type ServerMessage =
   | ({ type: 'ai_status' } & AiStatus)
+  | { type: 'speech_status'; status: SpeechStatus }
   | { type: 'start_call'; intent?: string }
   | { type: 'answer_call'; text: string }
   | { type: 'hospital_speaking_start' }
   | { type: 'hospital_speaking_stop' }
+  | { type: 'hospital_recording_failed'; reason: RecordingFailureReason }
   | { type: 'transcript_interim'; text: string }
   | { type: 'transcript_final'; text: string }
   | { type: 'generating_suggestions' }
