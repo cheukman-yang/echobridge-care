@@ -1,8 +1,11 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useEffectEvent, useCallback } from 'react';
-import { Phone, PhoneOff, Mic } from 'lucide-react';
+import { Mic, Phone, PhoneOff } from 'lucide-react';
 import { CallNotice } from '@/components/AiStatusBadge';
+import { AppHeader, CallStatus } from '@/components/AppHeader';
+import type { CallStatusTone } from '@/components/AppHeader';
+import { buttonClass, cx } from '@/components/ui';
 import { useCallChannel, useCallSocket } from '@/hooks/useCallChannel';
 import {
   CALL_CLOSED_NOTICES,
@@ -14,11 +17,15 @@ import { normalizeInviteCode, parseInviteFromHash } from '@/lib/callProtocol';
 import type {
   CallPhase,
   CallSnapshot,
+  CallTurn,
   ClientMessage,
+  PlaybackStatus,
   RecordingFailureReason,
   ServerMessage,
   SpeechStatus,
 } from '@/lib/callProtocol';
+import { CALL_PURPOSE_PROFILES, DEFAULT_CALL_PURPOSE } from '@/lib/callPurpose';
+import type { CallPurpose } from '@/lib/callPurpose';
 import { loadSpokenSeq, saveSpokenSeq } from '@/lib/callSession';
 
 /** 押してから、サーバーの受け付けとマイクの準備がそろうまでは録音中と表示しない。 */
@@ -35,10 +42,42 @@ const PHASE_TO_CALL_STATE: Record<CallPhase, HospitalCallState> = {
 
 const PATIENT_DISCONNECTED_NOTICE = '相手の接続が切れています。';
 
+/**
+ * 読み上げが終わった合図が来ないときに、次へ進むまでの上限。
+ * ブラウザによっては長い文の途中で読み上げが止まり、終わりの合図が来ない。待ち続けると録音もできなくなる。
+ */
+function readingWatchdogMs(text: string): number {
+  return Math.max(8_000, text.length * 300 + 4_000);
+}
+
 interface QueuedSpeech {
   text: string;
   /** 通話の記録にある発言の番号。自動案内にはない。 */
   seq?: number;
+}
+
+/** 相手の画面の字幕の1行。この画面から見て、EchoBridgeを使う人が「相手」。 */
+interface CaptionLine {
+  id: string;
+  who: 'caller' | 'me' | 'notice';
+  text: string;
+  seq?: number;
+}
+
+function turnToCaption(turn: CallTurn): CaptionLine {
+  return {
+    id: String(turn.seq),
+    who: turn.sender === '患者' ? 'caller' : 'me',
+    text: turn.text,
+    seq: turn.seq,
+  };
+}
+
+type AudioContextWindow = typeof window & { webkitAudioContext?: typeof AudioContext };
+
+function createAudioContext(options?: AudioContextOptions): AudioContext {
+  const AudioCtx = window.AudioContext || (window as AudioContextWindow).webkitAudioContext;
+  return new AudioCtx(options);
 }
 
 /** リンクで開いた招待コードを取り出し、アドレスバーと履歴からは消す。 */
@@ -56,16 +95,32 @@ const RECORDING_FAILURE_LABELS: Record<RecordingFailureReason, string> = {
 function describePtt(
   isConnected: boolean,
   phase: RecordingPhase,
+  isReadingAloud: boolean,
   isPatientSpeaking: boolean,
   speechStatus: SpeechStatus | null,
 ): string {
   if (!isConnected) return 'サーバーに接続していません';
-  if (phase === 'recording') return '録音＆送信中...';
-  if (phase !== 'idle') return '録音を準備中... まだ話さないでください';
-  if (isPatientSpeaking) return '相手が発話・入力中...';
-  if (speechStatus === 'unavailable') return '音声認識を利用できません。長押しで再確認します';
-  if (speechStatus !== 'ready') return '音声認識を準備中です。まだ録音できません';
-  return '長押しで発話 (PTT)';
+  if (phase === 'recording') return '録音中です。話し終えたら離してください';
+  if (phase !== 'idle') return '録音を準備しています。まだ話さないでください';
+  if (isReadingAloud) return '相手の文を読み上げています。終わってから話してください';
+  if (isPatientSpeaking) return '相手が入力中です。少しお待ちください';
+  if (speechStatus === 'unavailable') return '音声認識を利用できません。押すと再確認します';
+  if (speechStatus !== 'ready') return '音声認識を準備しています。まだ録音できません';
+  return '押している間だけ録音します';
+}
+
+function describeStatus(
+  callState: HospitalCallState,
+  isConnected: boolean,
+  peerConnected: boolean,
+): { tone: CallStatusTone; label: string } {
+  if (!isConnected) return { tone: 'warning', label: '再接続中' };
+  if (callState === 'ringing') return { tone: 'waiting', label: '着信中' };
+  if (callState === 'connected') {
+    return peerConnected ? { tone: 'live', label: '通話中' } : { tone: 'warning', label: '相手の接続待ち' };
+  }
+  if (callState === 'ended') return { tone: 'ended', label: '通話終了' };
+  return { tone: 'idle', label: '参加前' };
 }
 
 export default function HospitalApp() {
@@ -79,6 +134,13 @@ export default function HospitalApp() {
   const [callNotice, setCallNotice] = useState<string | null>(null);
   // 再読み込みの後は、操作があるまでブラウザが読み上げを止める。
   const [needsAudioResume, setNeedsAudioResume] = useState(false);
+  const [purpose, setPurpose] = useState<CallPurpose>(DEFAULT_CALL_PURPOSE);
+  const [partnerName, setPartnerName] = useState('');
+  const [captions, setCaptions] = useState<CaptionLine[]>([]);
+  const [liveText, setLiveText] = useState('');
+  // 今読み上げている発言。字幕で強調し、その間は録音を始めない。
+  const [readingSeq, setReadingSeq] = useState<number | null>(null);
+  const [isReadingAloud, setIsReadingAloud] = useState(false);
 
   const channel = useCallChannel('hospital');
 
@@ -91,23 +153,44 @@ export default function HospitalApp() {
   const captureAttemptRef = useRef(0);
 
   // 着信音用の管理Ref
-  const ringtoneTimerRef = useRef<any>(null);
+  const ringtoneTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ringAudioCtxRef = useRef<AudioContext | null>(null);
   const activeGainRef = useRef<GainNode | null>(null);
 
   const speechQueueRef = useRef<QueuedSpeech[]>([]);
   const isSpeakingRef = useRef<boolean>(false);
+  const readingWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 再接続で同じ発言を二度読まないよう、並べた最後の番号を覚える。
   const lastQueuedSeqRef = useRef(0);
   const isAudioBlockedRef = useRef(false);
   // 操作があったページでは、再接続しても読み上げを続けられる。
   const hasUserGestureRef = useRef(false);
   const pendingInviteRef = useRef<string | null>(null);
+  const captionsEndRef = useRef<HTMLDivElement>(null);
+  const localIdRef = useRef(0);
 
   const markSpoken = useCallback((seq: number | undefined) => {
     const seatToken = channel.seatTokenRef.current;
     if (seq !== undefined && seatToken) saveSpokenSeq(seatToken, seq);
   }, [channel]);
+
+  /** 読み上げの結果を本人の画面に知らせる。自動案内には番号がないので知らせない。 */
+  const reportPlayback = useCallback((seq: number | undefined, status: PlaybackStatus) => {
+    if (seq !== undefined) channel.send({ type: 'speech_playback', seq, status });
+  }, [channel]);
+
+  const setReading = useCallback((reading: boolean, seq: number | null) => {
+    isSpeakingRef.current = reading;
+    setIsReadingAloud(reading);
+    setReadingSeq(seq);
+  }, []);
+
+  const clearReadingWatchdog = useCallback(() => {
+    if (readingWatchdogRef.current) {
+      clearTimeout(readingWatchdogRef.current);
+      readingWatchdogRef.current = null;
+    }
+  }, []);
 
   const processSpeechQueue = useCallback(function processNext() {
     if (isSpeakingRef.current || isAudioBlockedRef.current || speechQueueRef.current.length === 0) return;
@@ -116,21 +199,30 @@ export default function HospitalApp() {
     const next = speechQueueRef.current.shift();
     if (!next) return;
 
-    isSpeakingRef.current = true;
+    setReading(true, next.seq ?? null);
     const utterance = new SpeechSynthesisUtterance(next.text);
     utterance.lang = 'ja-JP';
     utterance.rate = 1.0;
 
-    const finish = () => {
-      isSpeakingRef.current = false;
+    let finished = false;
+    const finish = (status: PlaybackStatus | null) => {
+      if (finished) return;
+      finished = true;
+      clearReadingWatchdog();
+      setReading(false, null);
       markSpoken(next.seq);
+      if (status) reportPlayback(next.seq, status);
       processNext();
     };
-    utterance.onend = finish;
-    utterance.onerror = finish;
+    utterance.onstart = () => reportPlayback(next.seq, 'started');
+    utterance.onend = () => finish('ended');
+    utterance.onerror = () => finish('failed');
+    // 終わりの合図が来なくても先へ進む。聞けたかどうかは分からないので、結果は知らせない。
+    clearReadingWatchdog();
+    readingWatchdogRef.current = setTimeout(() => finish(null), readingWatchdogMs(next.text));
 
     window.speechSynthesis.speak(utterance);
-  }, [markSpoken]);
+  }, [clearReadingWatchdog, markSpoken, reportPlayback, setReading]);
 
   const queueSpeech = useCallback((text: string, seq?: number) => {
     if (seq !== undefined) {
@@ -143,10 +235,20 @@ export default function HospitalApp() {
 
   const clearSpeechQueue = useCallback(() => {
     speechQueueRef.current = [];
-    isSpeakingRef.current = false;
+    clearReadingWatchdog();
+    setReading(false, null);
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
+  }, [clearReadingWatchdog, setReading]);
+
+  /** 字幕に1行足す。同じ番号の発言は二重に並べない。 */
+  const addCaption = useCallback((line: Omit<CaptionLine, 'id'> & { id?: string }) => {
+    setCaptions((prev) => {
+      if (line.seq !== undefined && prev.some((existing) => existing.seq === line.seq)) return prev;
+      localIdRef.current += 1;
+      return [...prev, { id: line.id ?? `local-${localIdRef.current}`, ...line }];
+    });
   }, []);
 
   // 着信音の完全停止処理
@@ -176,8 +278,7 @@ export default function HospitalApp() {
     stopRingtone(); // 二重再生を完全防止
 
     try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      const ctx = new AudioCtx();
+      const ctx = createAudioContext();
       ringAudioCtxRef.current = ctx;
 
       const playRing = () => {
@@ -253,8 +354,7 @@ export default function HospitalApp() {
       }
       mediaStreamRef.current = stream;
 
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      const audioContext = new AudioCtx({ sampleRate: 16000 });
+      const audioContext = createAudioContext({ sampleRate: 16000 });
       audioContextRef.current = audioContext;
 
       const source = audioContext.createMediaStreamSource(stream);
@@ -301,6 +401,10 @@ export default function HospitalApp() {
     setCallState('idle');
     setIsPatientSpeaking(false);
     setNeedsAudioResume(false);
+    setCaptions([]);
+    setLiveText('');
+    setPartnerName('');
+    setPurpose(DEFAULT_CALL_PURPOSE);
     isAudioBlockedRef.current = false;
     lastQueuedSeqRef.current = 0;
   }, [stopCallMedia]);
@@ -311,6 +415,10 @@ export default function HospitalApp() {
     setCallState(nextState);
     setIsPatientSpeaking(snapshot.isPatientSpeaking);
     setPeerConnected(snapshot.peerConnected);
+    setPurpose(snapshot.purpose);
+    setPartnerName(snapshot.partnerName);
+    setCaptions(snapshot.turns.map(turnToCaption));
+    setLiveText('');
     setCallNotice(null);
 
     if (nextState === 'ringing') {
@@ -346,17 +454,28 @@ export default function HospitalApp() {
     } else if (data.type === 'peer_status') {
       setPeerConnected(data.connected);
     } else if (data.type === 'hospital_speaking_start') {
+      setLiveText('');
       if (recordingPhaseRef.current === 'awaiting_server') beginCapture();
+    } else if (data.type === 'transcript_interim') {
+      setLiveText(data.text);
+    } else if (data.type === 'hospital_speaking_stop') {
+      setLiveText('');
+    } else if (data.type === 'transcript_final') {
+      setLiveText('');
+      addCaption({ id: String(data.seq), who: 'me', text: data.text, seq: data.seq });
     } else if (data.type === 'hospital_recording_failed') {
       setRecordingFailure(data.reason);
       releaseMic();
     } else if (data.type === 'answer_call') {
       stopRingtone(); // 念のため応答メッセージ受信時にも確実に停止
       setCallState('connected');
+      addCaption({ id: String(data.seq), who: 'caller', text: data.text, seq: data.seq });
       queueSpeech(data.text, data.seq);
     } else if (data.type === 'patient_typing_notice') {
+      addCaption({ who: 'notice', text: data.text });
       queueSpeech(data.text);
     } else if (data.type === 'patient_speech') {
+      addCaption({ id: String(data.seq), who: 'caller', text: data.text, seq: data.seq });
       queueSpeech(data.text, data.seq);
     } else if (data.type === 'patient_speaking_status') {
       setIsPatientSpeaking(data.isSpeaking);
@@ -364,7 +483,7 @@ export default function HospitalApp() {
       stopCallMedia();
       setCallState('ended');
     }
-  }, [applySnapshot, beginCapture, queueSpeech, releaseMic, returnToLobby, stopCallMedia, stopRingtone]);
+  }, [addCaption, applySnapshot, beginCapture, queueSpeech, releaseMic, returnToLobby, stopCallMedia, stopRingtone]);
 
   const isConnected = useCallSocket(channel, {
     onMessage: handleServerMessage,
@@ -415,6 +534,10 @@ export default function HospitalApp() {
 
   useEffect(() => stopCallMedia, [stopCallMedia]);
 
+  useEffect(() => {
+    captionsEndRef.current?.scrollIntoView?.({ block: 'end' });
+  }, [captions.length, liveText]);
+
   const handleJoinByCode = (event: React.FormEvent) => {
     event.preventDefault();
     const inviteCode = normalizeInviteCode(inviteInput);
@@ -459,22 +582,46 @@ export default function HospitalApp() {
 
   // 切断中は speechStatus が null になる。unavailable で押すと、サーバーが認証を確認し直す。
   const canStartRecording =
-    !isPatientSpeaking && (speechStatus === 'ready' || speechStatus === 'unavailable');
+    !isPatientSpeaking &&
+    !isReadingAloud &&
+    (speechStatus === 'ready' || speechStatus === 'unavailable');
   const isPreparing = recordingPhase === 'awaiting_server' || recordingPhase === 'opening_mic';
   const isRecording = recordingPhase === 'recording';
 
   // マイクを開くのはサーバーが受け付けた後。使えないときに許可を求めず、音声も送らない。
   const startRecording = () => {
-    if (recordingPhase !== 'idle' || !canStartRecording || isSpeakingRef.current) return;
+    if (recordingPhaseRef.current !== 'idle' || !canStartRecording || isSpeakingRef.current) return;
     setRecordingFailure(null);
     setRecordingPhase('awaiting_server');
     if (!channel.send({ type: 'hospital_speaking_start' })) setRecordingPhase('idle');
   };
 
+  // 離す操作は1回の押下で何度も届くことがある（離す・捕捉の解除）。2回目は何もしない。
   const stopRecording = () => {
-    if (recordingPhase === 'idle') return;
+    if (recordingPhaseRef.current === 'idle') return;
     releaseMic();
     channel.send({ type: 'hospital_speech_end' });
+  };
+
+  const onPttPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    startRecording();
+    // 指がボタンの外へずれても、離すまで録音を続ける。捕捉できない環境でも録音は止めない。
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {}
+  };
+
+  const onPttKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== ' ' && event.key !== 'Enter') return;
+    event.preventDefault();
+    if (!event.repeat) startRecording();
+  };
+
+  const onPttKeyUp = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== ' ' && event.key !== 'Enter') return;
+    event.preventDefault();
+    stopRecording();
   };
 
   const connectionNotice = !isConnected && callState !== 'idle'
@@ -482,155 +629,248 @@ export default function HospitalApp() {
     : callState === 'connected' && !peerConnected
     ? PATIENT_DISCONNECTED_NOTICE
     : null;
+  const bannerText = connectionNotice ?? callNotice;
+
+  const status = describeStatus(callState, isConnected, peerConnected);
+  const purposeLabel = CALL_PURPOSE_PROFILES[purpose].label;
+  const isInCall = callState === 'connected' && !needsAudioResume;
 
   return (
-    <div className="flex h-screen bg-slate-950 items-center justify-center p-4 relative select-none">
-      <div className="w-[360px] h-[780px] bg-slate-800 rounded-[3rem] border-[10px] border-slate-700 relative overflow-hidden flex flex-col shadow-2xl">
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-slate-700 rounded-b-2xl z-10" />
+    <div className="flex h-dvh flex-col bg-canvas select-none">
+      <AppHeader
+        compactOnMobile={isInCall}
+        status={<CallStatus tone={status.tone} label={status.label} />}
+        actions={
+          isInCall ? (
+            <button type="button" onClick={handleHangUp} className={buttonClass('danger', 'md')}>
+              <PhoneOff className="size-4" aria-hidden />
+              通話を切る
+            </button>
+          ) : undefined
+        }
+      />
 
-        <header className="pt-10 pb-3 px-5 border-b border-slate-700 flex items-center justify-center gap-2 z-20">
-          <span className="text-sm font-bold text-slate-300">ひまわり医院 (受付)</span>
-          <span
-            className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500 animate-pulse'}`}
-            title={isConnected ? 'サーバー接続中' : '未接続'}
-          />
-        </header>
+      {bannerText && (
+        <div className="border-b border-line bg-surface">
+          <div className="mx-auto max-w-[1440px] px-4 py-2.5 lg:px-6">
+            <CallNotice text={bannerText} />
+          </div>
+        </div>
+      )}
 
-        <CallNotice text={connectionNotice ?? callNotice} />
-
-        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-8">
-          {callState === 'idle' && (
-            <form onSubmit={handleJoinByCode} className="w-full space-y-3 select-text">
-              <div className="space-y-1">
-                <h2 className="text-base font-bold text-white">通話コードを入力</h2>
-                <p className="text-xs text-slate-400">
-                  患者側に表示されたコードを入力するか、招待リンクを開いてください
+      <main className="min-h-0 flex-1">
+        {callState === 'idle' && (
+          <div className="h-full overflow-y-auto">
+            <form
+              onSubmit={handleJoinByCode}
+              className="mx-auto w-full max-w-md space-y-6 px-4 py-10 select-text lg:py-16"
+            >
+              <div className="space-y-2">
+                <h1 className="text-[26px] font-bold leading-snug">通話に参加</h1>
+                <p className="text-[15px] leading-relaxed text-ink-2 text-pretty">
+                  届いた招待リンクを開くと、自動で参加します。リンクを開けないときは、相手の画面に表示されたコードを入力してください。
                 </p>
               </div>
-              <input
-                type="text"
-                aria-label="通話コード"
-                value={inviteInput}
-                onChange={(event) => setInviteInput(event.target.value)}
-                placeholder="XXXXX-XXXXX"
-                autoComplete="off"
-                autoCapitalize="characters"
-                spellCheck={false}
-                maxLength={32}
-                className="w-full bg-slate-900 border border-slate-600 rounded-xl px-3 py-2.5 text-center font-mono text-base tracking-widest text-white focus:outline-none focus:border-green-500"
-              />
+              <label className="block space-y-2">
+                <span className="block text-[15px] font-bold">通話コード</span>
+                <input
+                  type="text"
+                  aria-label="通話コード"
+                  value={inviteInput}
+                  onChange={(event) => setInviteInput(event.target.value)}
+                  placeholder="XXXXX-XXXXX"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  spellCheck={false}
+                  maxLength={32}
+                  className="w-full rounded-lg border border-line-strong bg-surface px-3.5 py-3 text-center text-[22px] font-bold tabular-nums text-ink placeholder:font-normal placeholder:text-ink-2/60 focus:border-voice"
+                />
+              </label>
               <button
                 type="submit"
                 disabled={!isConnected || !inviteInput.trim()}
-                className="w-full bg-green-600 hover:bg-green-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold py-2.5 rounded-xl transition active:scale-[0.98]"
+                className={buttonClass('primary', 'lg', 'w-full')}
               >
-                {isConnected ? '通話に参加する' : 'サーバー接続待機中...'}
+                {isConnected ? '通話に参加する' : 'サーバーに接続しています…'}
               </button>
+              <p className="border-t border-line pt-4 text-[13px] leading-relaxed text-ink-2">
+                EchoBridgeは、発話が難しい人がAIの支援を受けて話すための通話です。相手の言葉は合成音声で読み上げられ、あなたの声は文字にして相手に届きます。インストールとログインは不要です。
+              </p>
             </form>
-          )}
+          </div>
+        )}
 
-          {callState === 'ringing' && (
-            <div className="space-y-6 animate-pulse">
-              <div className="w-24 h-24 bg-green-500/20 rounded-full flex items-center justify-center mx-auto shadow-lg shadow-green-500/20">
-                <Phone className="w-10 h-10 text-green-400" />
+        {callState === 'ringing' && (
+          <div className="h-full overflow-y-auto">
+            <section
+              aria-labelledby="incoming-heading"
+              className="mx-auto w-full max-w-md space-y-6 px-4 py-10 lg:py-16"
+            >
+              <div className="space-y-3">
+                <h1 id="incoming-heading" className="text-[24px] font-bold leading-snug text-balance">
+                  AI音声アシスタントを使う人からの通話です
+                </h1>
+                <p className="text-[15px] leading-relaxed text-ink-2 text-pretty">
+                  応答すると、相手が用意した文を合成音声で読み上げます。音量を上げてからお聞きください。
+                </p>
               </div>
-              <div className="text-green-400 font-bold text-lg">着信中... 🔔</div>
-              <button
-                onClick={handleAnswerCall}
-                className="bg-green-500 hover:bg-green-600 text-white px-8 py-3 rounded-full font-bold shadow-lg transition active:scale-95"
-              >
-                応答する
-              </button>
-              <button
-                type="button"
-                onClick={handleLeaveCall}
-                className="block mx-auto text-xs text-slate-300 underline px-2 py-1"
-              >
-                応答しない
-              </button>
-            </div>
-          )}
-
-          {callState === 'connected' && needsAudioResume && (
-            <div className="space-y-4">
-              <p className="text-sm text-slate-300">読み上げを再開するにはボタンを押してください</p>
-              <button
-                type="button"
-                onClick={handleResumeAudio}
-                className="bg-green-500 hover:bg-green-600 text-white px-8 py-3 rounded-full font-bold shadow-lg transition active:scale-95"
-              >
-                通話に戻る
-              </button>
-            </div>
-          )}
-
-          {callState === 'connected' && !needsAudioResume && (
-            <div className="w-full flex flex-col items-center space-y-10">
-              <div className="w-full flex items-center justify-between">
-                <div className="text-green-400 font-bold flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                  通話中
+              <dl className="divide-y divide-line rounded-xl border border-line bg-surface text-[15px]">
+                <div className="flex gap-4 px-4 py-3">
+                  <dt className="w-16 shrink-0 text-ink-2">目的</dt>
+                  <dd className="min-w-0 font-bold">{purposeLabel}</dd>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleHangUp}
-                  className="flex items-center gap-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 px-3 py-1 rounded-full text-xs font-bold transition active:scale-95"
-                >
-                  <PhoneOff className="w-3.5 h-3.5" />
-                  <span>通話を切る</span>
+                {partnerName && (
+                  <div className="flex gap-4 px-4 py-3">
+                    <dt className="w-16 shrink-0 text-ink-2">宛先</dt>
+                    <dd className="min-w-0 font-bold break-words">{partnerName}</dd>
+                  </div>
+                )}
+              </dl>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button type="button" onClick={handleAnswerCall} className={buttonClass('primary', 'lg')}>
+                  <Phone className="size-5" aria-hidden />
+                  応答する
+                </button>
+                <button type="button" onClick={handleLeaveCall} className={buttonClass('secondary', 'lg')}>
+                  応答しない
                 </button>
               </div>
+            </section>
+          </div>
+        )}
 
-              <button
-                onMouseDown={startRecording}
-                onMouseUp={stopRecording}
-                onMouseLeave={stopRecording}
-                onTouchStart={startRecording}
-                onTouchEnd={stopRecording}
-                disabled={recordingPhase === 'idle' && !canStartRecording}
-                aria-label="長押しで発話"
-                className={`w-36 h-36 rounded-full flex items-center justify-center transition-all ${
-                  isRecording 
-                    ? 'bg-red-500 scale-95 shadow-[0_0_35px_rgba(239,68,68,0.7)]' 
-                    : isPreparing
-                    ? 'bg-amber-600/70 scale-95'
-                    : !canStartRecording
-                    ? 'bg-slate-700/50 opacity-40 cursor-not-allowed'
-                    : 'bg-slate-700 hover:bg-slate-600 shadow-xl'
-                }`}
-              >
-                <Mic className={`w-14 h-14 ${isRecording ? 'text-white' : 'text-slate-300'}`} />
+        {callState === 'connected' && needsAudioResume && (
+          <div className="h-full overflow-y-auto">
+            <section className="mx-auto w-full max-w-md space-y-5 px-4 py-10 lg:py-16">
+              <h1 className="text-[24px] font-bold leading-snug">通話に戻ります</h1>
+              <p className="text-[15px] leading-relaxed text-ink-2">
+                画面を読み込み直したため、読み上げが止まっています。ボタンを押すと、届いていた文から読み上げます。
+              </p>
+              <button type="button" onClick={handleResumeAudio} className={buttonClass('primary', 'lg', 'w-full')}>
+                通話に戻る
               </button>
+            </section>
+          </div>
+        )}
 
-              <div className="space-y-2">
-                <p
-                  role="status"
-                  className={`text-sm ${speechStatus === 'unavailable' ? 'text-amber-300' : 'text-slate-400'}`}
+        {isInCall && (
+          <div className="mx-auto flex h-full max-w-[1440px] flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(22rem,26rem)]">
+            <section aria-label="字幕" className="min-h-0 flex-1 overflow-y-auto lg:border-r lg:border-line">
+              <div className="mx-auto max-w-3xl px-4 py-5 lg:px-8 lg:py-6">
+                <ol role="log" aria-label="字幕" className="space-y-5">
+                  {captions.map((line) =>
+                    line.who === 'notice' ? (
+                      <li key={line.id} className="flex justify-center">
+                        <p className="rounded-full bg-subtle px-3.5 py-1.5 text-center text-[13px] text-ink-2">
+                          自動案内：{line.text}
+                        </p>
+                      </li>
+                    ) : (
+                      <li
+                        key={line.id}
+                        className={cx('flex flex-col gap-1.5', line.who === 'me' ? 'items-end' : 'items-start')}
+                      >
+                        <p className="flex items-center gap-2 px-1 text-[13px]">
+                          <span className="font-bold text-ink">{line.who === 'me' ? 'あなた' : '相手'}</span>
+                          <span className="text-ink-2">
+                            {line.who === 'me' ? '文字起こし' : '読み上げた文'}
+                          </span>
+                          {line.seq !== undefined && line.seq === readingSeq && (
+                            <span className="inline-flex items-center gap-1.5 font-bold text-voice-strong">
+                              <span aria-hidden className="eb-live-dot size-2 rounded-full bg-voice" />
+                              読み上げ中
+                            </span>
+                          )}
+                        </p>
+                        <p
+                          className={cx(
+                            'max-w-[min(40rem,88%)] rounded-xl px-4 py-3 leading-(--leading-talk) text-pretty break-words select-text',
+                            line.who === 'me'
+                              ? 'bg-subtle text-[16px] text-ink'
+                              : 'border border-line bg-surface text-[19px] text-ink',
+                            line.seq !== undefined && line.seq === readingSeq && 'border-voice ring-1 ring-voice',
+                          )}
+                        >
+                          {line.text}
+                        </p>
+                      </li>
+                    ),
+                  )}
+                </ol>
+                {captions.length === 0 && (
+                  <p className="rounded-xl border border-dashed border-line-strong px-4 py-4 text-[14px] text-ink-2">
+                    相手の文と、あなたの話した内容が、ここに文字で表示されます。
+                  </p>
+                )}
+                <div ref={captionsEndRef} />
+              </div>
+            </section>
+
+            <section
+              aria-label="話す"
+              className="shrink-0 border-t border-line bg-surface px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] lg:flex lg:flex-col lg:justify-center lg:border-t-0 lg:px-6 lg:py-6"
+            >
+              <div className="mx-auto w-full max-w-md space-y-3">
+                {(isRecording || liveText) && (
+                  <p className="min-h-6 text-[15px] leading-relaxed text-ink-2 break-words">
+                    {liveText ? `認識中：${liveText}` : '認識中…'}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onPointerDown={onPttPointerDown}
+                  onPointerUp={stopRecording}
+                  onPointerCancel={stopRecording}
+                  onKeyDown={onPttKeyDown}
+                  onKeyUp={onPttKeyUp}
+                  onBlur={stopRecording}
+                  onContextMenu={(event) => event.preventDefault()}
+                  disabled={recordingPhase === 'idle' && !canStartRecording}
+                  aria-describedby="ptt-hint"
+                  className={cx(
+                    'flex min-h-28 w-full touch-none flex-col items-center justify-center gap-2 rounded-2xl text-[18px] font-bold transition-colors duration-150 disabled:cursor-not-allowed lg:min-h-40',
+                    isRecording
+                      ? 'bg-danger text-white'
+                      : isPreparing
+                      ? 'bg-caution-soft text-caution ring-2 ring-caution-line'
+                      : canStartRecording
+                      ? 'bg-voice text-on-voice hover:bg-voice-strong'
+                      : 'bg-subtle text-ink-2',
+                  )}
                 >
-                  {describePtt(isConnected, recordingPhase, isPatientSpeaking, speechStatus)}
+                  <Mic className="size-8" aria-hidden />
+                  押して話す
+                </button>
+                <p role="status" className="text-center text-[15px] font-bold text-ink">
+                  {describePtt(isConnected, recordingPhase, isReadingAloud, isPatientSpeaking, speechStatus)}
                 </p>
                 {recordingFailure && (
-                  <p role="alert" className="text-sm font-semibold text-red-300">
+                  <p role="alert" className="text-center text-[15px] font-bold text-danger">
                     {RECORDING_FAILURE_LABELS[recordingFailure]}
                   </p>
                 )}
+                <p id="ptt-hint" className="hidden text-center text-[13px] leading-relaxed text-ink-2 lg:block">
+                  キーボードでは、スペースキーを押している間だけ録音します。
+                </p>
               </div>
-            </div>
-          )}
+            </section>
+          </div>
+        )}
 
-          {callState === 'ended' && (
-            <div className="space-y-4">
-              <div className="text-slate-400 text-sm">通話が終了しました</div>
-              <button
-                onClick={handleLeaveCall}
-                className="bg-slate-700 hover:bg-slate-600 text-white px-5 py-2 rounded-xl text-xs font-semibold active:scale-95"
-              >
+        {callState === 'ended' && (
+          <div className="h-full overflow-y-auto">
+            <section className="mx-auto w-full max-w-md space-y-5 px-4 py-10 lg:py-16">
+              <h1 className="text-[24px] font-bold leading-snug">通話が終了しました</h1>
+              <p className="text-[15px] leading-relaxed text-ink-2">
+                この画面の字幕は保存されません。新しい招待リンクを開くと、次の通話に参加できます。
+              </p>
+              <button type="button" onClick={handleLeaveCall} className={buttonClass('secondary', 'md')}>
                 待機画面に戻る
               </button>
-            </div>
-          )}
-        </div>
-      </div>
+            </section>
+          </div>
+        )}
+      </main>
     </div>
   );
 }

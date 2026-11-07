@@ -8,8 +8,8 @@ import { FakeWebSocket } from '../helpers/fakeWebSocket';
 
 const NOT_SENT_NOTICE = '録音を開始できませんでした。音声は送られていません。';
 const INTERRUPTED_NOTICE = '音声認識が中断しました。もう一度話してください。';
-const RECORDING_LABEL = '録音＆送信中...';
-const PREPARING_LABEL = '録音を準備中... まだ話さないでください';
+const RECORDING_LABEL = '録音中です。話し終えたら離してください';
+const PREPARING_LABEL = '録音を準備しています。まだ話さないでください';
 
 class FakeAudioContext {
   static instances: FakeAudioContext[] = [];
@@ -61,11 +61,11 @@ function renderConnectedCall(status: SpeechStatus | null = 'ready') {
 
 async function renderRecordingCall() {
   renderConnectedCall();
-  fireEvent.mouseDown(ptt());
+  fireEvent.pointerDown(ptt());
   await serverAccepts();
 }
 
-const ptt = () => screen.getByRole('button', { name: '長押しで発話' }) as HTMLButtonElement;
+const ptt = () => screen.getByRole('button', { name: '押して話す' }) as HTMLButtonElement;
 const pttLabel = () => screen.getByRole('status').textContent;
 const failureNotice = () => screen.queryByRole('alert')?.textContent ?? null;
 const startRequests = () => socket().sentOfType('hospital_speaking_start');
@@ -110,9 +110,9 @@ describe('病院の録音', () => {
       renderConnectedCall('checking');
 
       expect(ptt().disabled).toBe(true);
-      expect(pttLabel()).toBe('音声認識を準備中です。まだ録音できません');
+      expect(pttLabel()).toBe('音声認識を準備しています。まだ録音できません');
 
-      fireEvent.mouseDown(ptt());
+      fireEvent.pointerDown(ptt());
       expect(startRequests()).toEqual([]);
     });
 
@@ -120,7 +120,7 @@ describe('病院の録音', () => {
       renderConnectedCall(null);
 
       expect(ptt().disabled).toBe(true);
-      expect(pttLabel()).toBe('音声認識を準備中です。まだ録音できません');
+      expect(pttLabel()).toBe('音声認識を準備しています。まだ録音できません');
     });
 
     it('準備が終わると押せるようになる', () => {
@@ -129,16 +129,16 @@ describe('病院の録音', () => {
       receive({ type: 'speech_status', status: 'ready' });
 
       expect(ptt().disabled).toBe(false);
-      expect(pttLabel()).toBe('長押しで発話 (PTT)');
+      expect(pttLabel()).toBe('押している間だけ録音します');
     });
 
     it('利用できないことを表示し、押すと確認し直せる', () => {
       renderConnectedCall('unavailable');
 
-      expect(pttLabel()).toBe('音声認識を利用できません。長押しで再確認します');
+      expect(pttLabel()).toBe('音声認識を利用できません。押すと再確認します');
       expect(ptt().disabled).toBe(false);
 
-      fireEvent.mouseDown(ptt());
+      fireEvent.pointerDown(ptt());
 
       expect(startRequests()).toHaveLength(1);
     });
@@ -158,7 +158,7 @@ describe('病院の録音', () => {
       receive({ type: 'patient_speaking_status', isSpeaking: true });
 
       expect(ptt().disabled).toBe(true);
-      expect(pttLabel()).toBe('相手が発話・入力中...');
+      expect(pttLabel()).toBe('相手が入力中です。少しお待ちください');
     });
 
     // 無効にすると mouseup が届かず、指を離しても録音が止まらなくなる。
@@ -166,7 +166,7 @@ describe('病院の録音', () => {
       await renderRecordingCall();
 
       receive({ type: 'patient_speaking_status', isSpeaking: true });
-      fireEvent.mouseUp(ptt());
+      fireEvent.pointerUp(ptt());
 
       expect(track.stop).toHaveBeenCalled();
       expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
@@ -189,7 +189,7 @@ describe('病院の録音', () => {
     it('受け付けまではマイクを開かず、録音中と表示しない', () => {
       renderConnectedCall();
 
-      fireEvent.mouseDown(ptt());
+      fireEvent.pointerDown(ptt());
 
       expect(startRequests()).toHaveLength(1);
       expect(getUserMedia).not.toHaveBeenCalled();
@@ -200,7 +200,7 @@ describe('病院の録音', () => {
       let openMic: (stream: unknown) => void = () => {};
       getUserMedia.mockImplementation(() => new Promise((resolve) => { openMic = resolve; }));
       renderConnectedCall();
-      fireEvent.mouseDown(ptt());
+      fireEvent.pointerDown(ptt());
 
       await serverAccepts();
       expect(pttLabel()).toBe(PREPARING_LABEL);
@@ -221,12 +221,12 @@ describe('病院の録音', () => {
     it('指を離すとマイクを閉じ、発話の終わりを送る', async () => {
       await renderRecordingCall();
 
-      fireEvent.mouseUp(ptt());
+      fireEvent.pointerUp(ptt());
 
       expect(track.stop).toHaveBeenCalled();
       expect(micProcessor().disconnect).toHaveBeenCalled();
       expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
-      expect(pttLabel()).toBe('長押しで発話 (PTT)');
+      expect(pttLabel()).toBe('押している間だけ録音します');
     });
 
     it('別の端末の録音の配信ではマイクを開かない', async () => {
@@ -241,22 +241,22 @@ describe('病院の録音', () => {
   describe('録音できなかったら本人に知らせる', () => {
     it('サーバーが断ったらマイクを開かず、音声が届いていないと伝える', async () => {
       renderConnectedCall();
-      fireEvent.mouseDown(ptt());
+      fireEvent.pointerDown(ptt());
 
       receive({ type: 'hospital_recording_failed', reason: 'start_failed' });
       await serverAccepts();
 
       expect(getUserMedia).not.toHaveBeenCalled();
       expect(failureNotice()).toBe(NOT_SENT_NOTICE);
-      expect(pttLabel()).toBe('長押しで発話 (PTT)');
+      expect(pttLabel()).toBe('押している間だけ録音します');
     });
 
     it('断られた後に指を離しても、発話の終わりを送らない', () => {
       renderConnectedCall();
-      fireEvent.mouseDown(ptt());
+      fireEvent.pointerDown(ptt());
       receive({ type: 'hospital_recording_failed', reason: 'start_failed' });
 
-      fireEvent.mouseUp(ptt());
+      fireEvent.pointerUp(ptt());
 
       expect(socket().sentOfType('hospital_speech_end')).toEqual([]);
     });
@@ -268,16 +268,16 @@ describe('病院の録音', () => {
 
       expect(track.stop).toHaveBeenCalled();
       expect(failureNotice()).toBe(INTERRUPTED_NOTICE);
-      expect(pttLabel()).toBe('長押しで発話 (PTT)');
+      expect(pttLabel()).toBe('押している間だけ録音します');
       expect(socket().sentOfType('hospital_speech_end')).toEqual([]);
     });
 
     it('次の録音を始めると通知を消す', () => {
       renderConnectedCall();
-      fireEvent.mouseDown(ptt());
+      fireEvent.pointerDown(ptt());
       receive({ type: 'hospital_recording_failed', reason: 'start_failed' });
 
-      fireEvent.mouseDown(ptt());
+      fireEvent.pointerDown(ptt());
 
       expect(failureNotice()).toBeNull();
     });
@@ -307,13 +307,13 @@ describe('病院の録音', () => {
     it('マイクを使えなければ録音を取り消す', async () => {
       getUserMedia.mockRejectedValue(new Error('denied'));
       renderConnectedCall();
-      fireEvent.mouseDown(ptt());
+      fireEvent.pointerDown(ptt());
 
       await serverAccepts();
 
       expect(alert).toHaveBeenCalledWith('マイクの使用が許可されていません。');
       expect(socket().sentOfType('hospital_speaking_stop')).toHaveLength(1);
-      expect(pttLabel()).toBe('長押しで発話 (PTT)');
+      expect(pttLabel()).toBe('押している間だけ録音します');
     });
   });
 
@@ -322,21 +322,21 @@ describe('病院の録音', () => {
       let openMic: (stream: unknown) => void = () => {};
       getUserMedia.mockImplementation(() => new Promise((resolve) => { openMic = resolve; }));
       renderConnectedCall();
-      fireEvent.mouseDown(ptt());
+      fireEvent.pointerDown(ptt());
       await serverAccepts();
 
-      fireEvent.mouseUp(ptt());
+      fireEvent.pointerUp(ptt());
       await act(async () => openMic({ getTracks: () => [track] }));
 
       expect(track.stop).toHaveBeenCalled();
-      expect(pttLabel()).toBe('長押しで発話 (PTT)');
+      expect(pttLabel()).toBe('押している間だけ録音します');
       expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
     });
 
     it('受け付けの前に指を離したら、マイクを開かない', async () => {
       renderConnectedCall();
-      fireEvent.mouseDown(ptt());
-      fireEvent.mouseUp(ptt());
+      fireEvent.pointerDown(ptt());
+      fireEvent.pointerUp(ptt());
 
       await serverAccepts();
 
@@ -654,12 +654,12 @@ describe('病院役の参加と読み上げ', () => {
       receive(callJoined('hospital', { turns }));
 
       expect(spokenTexts()).toEqual([]);
-      expect(screen.queryByRole('button', { name: '長押しで発話' })).toBeNull();
+      expect(screen.queryByRole('button', { name: '押して話す' })).toBeNull();
 
       fireEvent.click(screen.getByRole('button', { name: '通話に戻る' }));
 
       expect(spokenTexts()).toEqual(['切断中に送った文']);
-      expect(screen.getByRole('button', { name: '長押しで発話' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: '押して話す' })).toBeTruthy();
     });
 
     it('別の通話の読み上げ位置は使わない', () => {
@@ -703,11 +703,11 @@ describe('病院役の参加と読み上げ', () => {
       connectAndAnswer();
       receive({ type: 'speech_status', status: 'ready' });
       receive({ type: 'patient_speaking_status', isSpeaking: true });
-      expect((screen.getByRole('button', { name: '長押しで発話' }) as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByRole('button', { name: '押して話す' }) as HTMLButtonElement).disabled).toBe(true);
 
       receive(callJoined('hospital', { turns: [], isPatientSpeaking: false }));
 
-      expect((screen.getByRole('button', { name: '長押しで発話' }) as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByRole('button', { name: '押して話す' }) as HTMLButtonElement).disabled).toBe(false);
     });
 
     it('通話が見つからなければ、席を忘れて入力画面に戻る', () => {
@@ -729,5 +729,153 @@ describe('病院役の参加と読み上げ', () => {
       expect(screen.getByTestId('call-notice').textContent).toContain('別の画面で開かれた');
       expect(codeInput()).toBeTruthy();
     });
+  });
+});
+
+describe('相手の画面の字幕と読み上げの報告', () => {
+  class FakeUtterance {
+    onstart: (() => void) | null = null;
+    onend: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    lang = '';
+    rate = 1;
+    constructor(public text: string) {}
+  }
+
+  let spoken: FakeUtterance[];
+  const current = () => spoken.at(-1)!;
+  const playbackReports = () => socket().sentOfType('speech_playback');
+
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    FakeAudioContext.instances = [];
+    spoken = [];
+    window.sessionStorage.clear();
+    window.history.replaceState(null, '', '/join');
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance);
+    vi.stubGlobal('speechSynthesis', {
+      speaking: false,
+      cancel: vi.fn(),
+      speak: vi.fn((utterance: FakeUtterance) => spoken.push(utterance)),
+    });
+    const track = { stop: vi.fn() };
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [track] })) },
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  function answeredCall() {
+    renderConnectedCall();
+    receive({ type: 'answer_call', text: 'あいさつの文', seq: 1 });
+  }
+
+  it('着信の画面に目的と宛先を出す', () => {
+    render(<HospitalApp />);
+    act(() => socket().open());
+    receive(callJoined('hospital', { phase: 'ringing', purpose: 'general', partnerName: '佐藤さん' }));
+
+    expect(screen.getByText('日常の連絡')).toBeTruthy();
+    expect(screen.getByText('佐藤さん')).toBeTruthy();
+  });
+
+  it('読み上げの開始と終了を、本人の発言の番号で知らせる', () => {
+    answeredCall();
+
+    act(() => current().onstart?.());
+    act(() => current().onend?.());
+
+    expect(playbackReports()).toEqual([
+      { type: 'speech_playback', seq: 1, status: 'started' },
+      { type: 'speech_playback', seq: 1, status: 'ended' },
+    ]);
+  });
+
+  it('読み上げに失敗したら知らせる', () => {
+    answeredCall();
+
+    act(() => current().onerror?.());
+
+    expect(playbackReports()).toEqual([{ type: 'speech_playback', seq: 1, status: 'failed' }]);
+  });
+
+  it('自動案内の読み上げは知らせない', () => {
+    answeredCall();
+    act(() => current().onend?.());
+
+    receive({ type: 'patient_typing_notice', text: '入力中です' });
+    act(() => current().onend?.());
+
+    expect(playbackReports().map(({ seq }) => seq)).toEqual([1]);
+  });
+
+  it('終わりの合図が来なくても、時間がたてば次の文へ進み、結果は知らせない', () => {
+    vi.useFakeTimers();
+    answeredCall();
+    receive({ type: 'patient_speech', text: '次の文', origin: 'typed', seq: 3 });
+    expect(spoken.map(({ text }) => text)).toEqual(['あいさつの文']);
+
+    act(() => {
+      vi.advanceTimersByTime(8_000);
+    });
+
+    expect(spoken.map(({ text }) => text)).toEqual(['あいさつの文', '次の文']);
+    expect(playbackReports()).toEqual([]);
+  });
+
+  it('読み上げている間は録音を始めず、理由を表示する', () => {
+    answeredCall();
+
+    expect(ptt().disabled).toBe(true);
+    expect(pttLabel()).toBe('相手の文を読み上げています。終わってから話してください');
+
+    act(() => current().onend?.());
+
+    expect(ptt().disabled).toBe(false);
+  });
+
+  it('相手の文と自分の文字起こしを字幕に並べる', () => {
+    answeredCall();
+    act(() => current().onend?.());
+    receive({ type: 'transcript_final', text: '自分の発言です', seq: 2 });
+    receive({ type: 'patient_speech', text: '相手からの文です', origin: 'typed', seq: 3 });
+
+    const log = screen.getByRole('log');
+    expect(log.textContent).toContain('あいさつの文');
+    expect(log.textContent).toContain('自分の発言です');
+    expect(log.textContent).toContain('相手からの文です');
+  });
+
+  it('スペースキーを押している間だけ録音する', async () => {
+    renderConnectedCall();
+
+    fireEvent.keyDown(ptt(), { key: ' ' });
+    expect(startRequests()).toHaveLength(1);
+    await serverAccepts();
+
+    fireEvent.keyDown(ptt(), { key: ' ', repeat: true });
+    expect(startRequests()).toHaveLength(1);
+
+    fireEvent.keyUp(ptt(), { key: ' ' });
+    expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
+  });
+
+  it('離す合図が2回届いても、発話の終わりは1回だけ送る', async () => {
+    renderConnectedCall();
+    fireEvent.pointerDown(ptt());
+    await serverAccepts();
+
+    fireEvent.pointerUp(ptt());
+    fireEvent.pointerCancel(ptt());
+
+    expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
   });
 });
