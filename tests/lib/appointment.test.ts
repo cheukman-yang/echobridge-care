@@ -39,7 +39,20 @@ describe('sanitizeAppointment', () => {
       endTime: '15:00',
       location: 'ひまわり医院 (受付)',
       details: '持ち物: お薬手帳',
+      // 場所はAIが返していないので、AIの項目に含めない。
+      aiFields: ['title', 'date', 'startTime', 'endTime', 'details'],
     });
+  });
+
+  it('AIが返さず既定値で埋めた項目と、形式が不正で捨てた項目は、AIの項目に含めない', () => {
+    const result = sanitizeAppointment(
+      { ...raw, title: null, startTime: '25:00', location: ' 2階 ' },
+      DEFAULTS,
+      TODAY,
+    );
+
+    expect(result.title).toBe(DEFAULTS.title);
+    expect(result.aiFields).toEqual(['date', 'location', 'details']);
   });
 
   it('当日の予定は有効', () => {

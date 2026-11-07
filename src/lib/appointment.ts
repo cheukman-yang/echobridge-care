@@ -1,4 +1,4 @@
-import type { AppointmentDraft } from './callProtocol';
+import type { AppointmentDraft, AppointmentField } from './callProtocol';
 
 const TIME_ZONE = 'Asia/Tokyo';
 const CALENDAR_BASE_URL = 'https://calendar.google.com/calendar/render';
@@ -81,6 +81,15 @@ export function sanitizeAppointment(
   const endTime =
     startTime && endCandidate && toMinutes(endCandidate) > toMinutes(startTime) ? endCandidate : null;
 
+  const fromAi: Record<AppointmentField, boolean> = {
+    title: Boolean(raw.title?.trim()),
+    date: date !== null,
+    startTime: startTime !== null,
+    endTime: endTime !== null,
+    location: Boolean(raw.location?.trim()),
+    details: Boolean(raw.details?.trim()),
+  };
+
   return {
     title: raw.title?.trim() || defaults.title,
     date,
@@ -88,6 +97,7 @@ export function sanitizeAppointment(
     endTime,
     location: raw.location?.trim() || defaults.location,
     details: raw.details?.trim() ?? '',
+    aiFields: (Object.keys(fromAi) as AppointmentField[]).filter((field) => fromAi[field]),
   };
 }
 

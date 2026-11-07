@@ -162,3 +162,49 @@ describe('相手の端末での読み上げの報告', () => {
     expect(call.patient.all('speech_playback')).toHaveLength(0);
   });
 });
+
+describe('即答フレーズと返答候補', () => {
+  let testServer: CallTestServer;
+
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    testServer = new CallTestServer();
+  });
+
+  afterEach(() => testServer.close());
+
+  const THREE = {
+    suggestions: [
+      { text: 'はい。', tag: '承諾' },
+      { text: '別の日でお願いします。', tag: '別日程' },
+      { text: '確認させてください。', tag: '確認' },
+    ],
+  };
+
+  async function snapshotAfterReconnect(seatToken: string) {
+    const client = await testServer.connect();
+    client.send({ type: 'join_call', seatToken });
+    return { client, snapshot: (await client.waitFor('call_joined')).snapshot };
+  }
+
+  it('即答フレーズでは返答候補を残し、入力した文では片付ける', async () => {
+    await testServer.listen(createFakeModels(() => jsonReply(THREE)));
+    const call = await testServer.openCall();
+    const { seatToken } = await call.patient.waitFor('call_joined');
+    await testServer.hospitalSays(call, '質問です');
+    await call.patient.waitFor('suggestions');
+
+    call.patient.send({ type: 'patient_confirmed_speech', text: '少々お待ちください。', origin: 'quick_phrase' });
+    await call.hospital.waitFor('patient_speech');
+    const first = await snapshotAfterReconnect(seatToken);
+
+    expect(first.snapshot.suggestions?.suggestions).toEqual(THREE.suggestions);
+
+    first.client.send({ type: 'patient_confirmed_speech', text: '入力した文', origin: 'typed' });
+    await call.hospital.waitFor('patient_speech', 2);
+    const second = await snapshotAfterReconnect(seatToken);
+
+    expect(second.snapshot.suggestions).toBeNull();
+  });
+});

@@ -35,7 +35,7 @@ import type {
   SpeechStatus,
   SuggestionItem,
 } from '@/lib/callProtocol';
-import { DEFAULT_CALL_PURPOSE } from '@/lib/callPurpose';
+import { CALL_PURPOSE_PROFILES, DEFAULT_CALL_PURPOSE } from '@/lib/callPurpose';
 import type { CallPurpose } from '@/lib/callPurpose';
 import { INITIAL_COMPOSER, composerReducer, resolveConfirmedSpeech } from '@/lib/composer';
 import type { SpeechChoice } from '@/lib/composer';
@@ -356,9 +356,12 @@ export default function PatientApp() {
     }
     setSendError(null);
     clearIdleTimer();
-    setSuggestions([]);
-    setSuggestionsAi(null);
-    setIsGenerating(false);
+    // 即答フレーズは「少々お待ちください」のように会話をつなぐ文なので、返答候補は残す。サーバーも残す。
+    if (origin !== 'quick_phrase') {
+      setSuggestions([]);
+      setSuggestionsAi(null);
+      setIsGenerating(false);
+    }
     return true;
   };
 
@@ -411,12 +414,13 @@ export default function PatientApp() {
     }
   };
 
-  /** 定型の返事を送る。ボタンの文がそのまま読み上げられる。 */
+  /**
+   * 定型の返事を送る。ボタンの文がそのまま読み上げられる。
+   * 入力中の文、作成中・確認中のAI案はそのまま残し、即答の後に続きを送れるようにする。
+   */
   const handleSendQuickPhrase = (text: string) => {
     if (isHospitalSpeaking) return;
-    if (sendConfirmedSpeech(text, 'quick_phrase')) {
-      dispatchComposer({ type: 'close' });
-    }
+    sendConfirmedSpeech(text, 'quick_phrase');
   };
 
   const handleEndCall = () => {
@@ -564,7 +568,7 @@ export default function PatientApp() {
             </section>
             <section
               aria-label="返答"
-              className="max-h-[58%] shrink-0 overflow-y-auto border-t border-line bg-surface px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] lg:max-h-none lg:border-t-0 lg:px-6 lg:py-6"
+              className="flex max-h-[60%] min-h-0 shrink-0 flex-col border-t border-line bg-surface lg:max-h-none lg:border-t-0"
             >
               <ReplyPanel
                 partnerLabel={partnerLabel}
@@ -607,6 +611,10 @@ export default function PatientApp() {
           <div className="h-full overflow-y-auto">
             <CallSummary
               result={appointmentResult}
+              manualDefaults={{
+                title: intent.trim() || CALL_PURPOSE_PROFILES[purpose].defaultEventTitle,
+                location: CALL_PURPOSE_PROFILES[purpose].partnerIsPlace ? partnerName.trim() : '',
+              }}
               partnerLabel={partnerLabel}
               transcript={transcript}
               onBack={handleResetCall}

@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { CalendarPlus } from 'lucide-react';
+import { AI_FAILURE_LABELS } from '@/lib/aiMeta';
 import { hasScheduleHint } from '@/lib/appointment';
-import type { AppointmentResult } from '@/lib/callProtocol';
+import type { AppointmentDraft, AppointmentResult } from '@/lib/callProtocol';
 import { AppointmentReviewCard } from './AppointmentReviewCard';
 import { Notice, SectionHeading, buttonClass } from './ui';
 
@@ -13,18 +14,35 @@ export interface TranscriptLine {
 
 interface CallSummaryProps {
   result: AppointmentResult;
+  /** 本人が手で入力するときの初期値。発信のときの入力から作り、AIの値は入れない。 */
+  manualDefaults: { title: string; location: string };
   partnerLabel: string;
   transcript: TranscriptLine[];
   onBack: () => void;
 }
 
 /**
- * 通話の後の画面。予定が話された通話だけ、予定の下書きを前に出す。
- * 予定のない通話で、予約が済んだように見せない。
+ * 通話の後の画面。予定の状態を「予定あり」「予定なし」「読み取りの失敗」「本人の入力」に分ける。
+ * 予定が話された通話だけ下書きを前に出し、予定のない通話で入力を求めたり、予約が済んだように見せたりしない。
  */
-export function CallSummary({ result, partnerLabel, transcript, onBack }: CallSummaryProps) {
-  const found = result.ai.source === 'fallback' || hasScheduleHint(result.appointment);
-  const [showManual, setShowManual] = useState(false);
+export function CallSummary({ result, manualDefaults, partnerLabel, transcript, onBack }: CallSummaryProps) {
+  const { ai, appointment } = result;
+  const state = ai.source === 'fallback' ? 'failed' : hasScheduleHint(appointment) ? 'found' : 'none';
+  const [manual, setManual] = useState(false);
+  const manualDraft: AppointmentDraft = {
+    title: manualDefaults.title,
+    date: null,
+    startTime: null,
+    endTime: null,
+    location: manualDefaults.location,
+    details: '',
+  };
+  const addManually = (
+    <button type="button" onClick={() => setManual(true)} className={buttonClass('secondary', 'md')}>
+      <CalendarPlus className="size-4" aria-hidden />
+      予定を手で追加
+    </button>
+  );
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-8 px-4 py-8 lg:py-12">
@@ -35,15 +53,21 @@ export function CallSummary({ result, partnerLabel, transcript, onBack }: CallSu
 
       <section aria-labelledby="schedule-heading" className="space-y-3">
         <SectionHeading id="schedule-heading">予定</SectionHeading>
-        {found || showManual ? (
-          <AppointmentReviewCard appointment={result.appointment} ai={result.ai} />
+        {manual ? (
+          <AppointmentReviewCard appointment={manualDraft} source={{ kind: 'manual' }} />
+        ) : state === 'found' && ai.source === 'gemini' ? (
+          <AppointmentReviewCard appointment={appointment} source={{ kind: 'ai', model: ai.model }} />
+        ) : state === 'failed' && ai.source === 'fallback' ? (
+          <div className="space-y-3">
+            <Notice tone="caution" role="status" title="AIで予定を読み取れませんでした">
+              {AI_FAILURE_LABELS[ai.reason]}。予定が決まっていた場合は、会話の記録を見て手で追加できます。
+            </Notice>
+            {addManually}
+          </div>
         ) : (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-surface p-5">
             <p className="text-[15px] text-ink-2">通話の中で、決まった予定は見つかりませんでした。</p>
-            <button type="button" onClick={() => setShowManual(true)} className={buttonClass('secondary', 'md')}>
-              <CalendarPlus className="size-4" aria-hidden />
-              予定を手で追加
-            </button>
+            {addManually}
           </div>
         )}
       </section>

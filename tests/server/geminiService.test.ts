@@ -311,6 +311,7 @@ describe('extractAppointment', () => {
       endTime: null,
       location: 'ひまわり医院',
       details: '',
+      aiFields: [],
     });
   });
 

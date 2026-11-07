@@ -328,7 +328,14 @@ export function createAiAssistant(
       if (!result.ok) {
         // 日時を推測で埋めない。空欄のまま本人に確認してもらう。
         return {
-          appointment: { ...defaults, date: null, startTime: null, endTime: null, details: '' },
+          appointment: {
+            ...defaults,
+            date: null,
+            startTime: null,
+            endTime: null,
+            details: '',
+            aiFields: [],
+          },
           ai: result.ai,
         };
       }

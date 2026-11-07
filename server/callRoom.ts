@@ -404,7 +404,8 @@ export class CallRoom {
   /** 本人が確定した文を相手に届ける唯一の経路。文は書き換えない。 */
   speak(text: string, origin: SpeechOrigin): void {
     // 本人が返答したので、生成中の候補が後から届いても表示しない。
-    this.discardSuggestions();
+    // 即答フレーズは「少々お待ちください」のように会話をつなぐ文なので、候補はそのまま使えるよう残す。
+    if (origin !== 'quick_phrase') this.discardSuggestions();
     const seq = this.addTurn({ sender: '患者', text, origin });
     logEvent('INFO', 'patient_speech', { callId: this.id, origin, length: text.length });
     this.broadcast({ type: 'patient_speech', text, origin, seq });

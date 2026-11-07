@@ -473,10 +473,13 @@ describe('通話後の予定の確認', () => {
 
   const calendarButton = () => screen.getByRole('button', { name: 'Google カレンダーに追加' });
 
-  it('AIが失敗したら理由を示し、日時を埋めない', () => {
+  it('AIが失敗したら理由を示し、手で追加しても日時を埋めない', () => {
     endCall(unknown, { source: 'fallback', reason: 'not_configured' });
 
-    expect(screen.getByRole('alert').textContent).toContain('AIで読み取れませんでした');
+    expect(screen.getByRole('status').textContent).toContain('AIで予定を読み取れませんでした');
+    expect(screen.getByRole('status').textContent).toContain('AIが未設定です');
+    fireEvent.click(screen.getByRole('button', { name: '予定を手で追加' }));
+
     expect(screen.getByLabelText(/日付/)).toHaveProperty('value', '');
     expect(screen.getAllByText('要確認')).toHaveLength(2);
     expect(calendarButton()).toHaveProperty('disabled', true);
@@ -486,6 +489,7 @@ describe('通話後の予定の確認', () => {
     const open = vi.fn();
     vi.stubGlobal('open', open);
     endCall(unknown, { source: 'fallback', reason: 'not_configured' });
+    fireEvent.click(screen.getByRole('button', { name: '予定を手で追加' }));
 
     fireEvent.change(screen.getByLabelText(/日付/), { target: { value: '2026-11-12' } });
     fireEvent.change(screen.getByLabelText(/開始/), { target: { value: '14:30' } });
@@ -1041,5 +1045,107 @@ describe('予定のない通話の終了画面', () => {
       'disabled',
       true,
     );
+  });
+});
+
+describe('レビュー指摘: 即答フレーズをいつでも使える', () => {
+  const suggestions = [
+    { text: 'はい、お願いいたします。', tag: '承諾' },
+    { text: '別の日時でお願いできますか。', tag: '別日程' },
+    { text: '持ち物はありますか。', tag: '確認' },
+  ];
+
+  it('AI案の確認中でも即答でき、確認中の案と編集は残る', () => {
+    renderConnectedCall();
+    const requestId = requestPolish('あした行けます');
+    polishResult(requestId, 'あした行けます', '明日伺います。');
+    fireEvent.change(screen.getByLabelText(/AIの案/), { target: { value: '明日の朝に伺います。' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '少々お待ちください。' }));
+
+    expect(confirmedSpeech()).toEqual([
+      { type: 'patient_confirmed_speech', text: '少々お待ちください。', origin: 'quick_phrase' },
+    ]);
+    expect(screen.getByRole('region', { name: '送信前の確認' })).toBeTruthy();
+    expect(screen.getByLabelText(/AIの案/)).toHaveProperty('value', '明日の朝に伺います。');
+  });
+
+  it('AIが案を作っている間に即答しても、届いた案で確認画面を開く', () => {
+    renderConnectedCall();
+    const requestId = requestPolish('あした行けます');
+
+    fireEvent.click(screen.getByRole('button', { name: 'もう一度お願いします。' }));
+    polishResult(requestId, 'あした行けます', '明日伺います。');
+
+    expect(screen.getByLabelText(/AIの案/)).toHaveProperty('value', '明日伺います。');
+  });
+
+  it('即答フレーズを送っても、返答候補を残す', () => {
+    renderConnectedCall();
+    receive({ type: 'suggestions', suggestions, ai: GEMINI });
+
+    fireEvent.click(screen.getByRole('button', { name: '少々お待ちください。' }));
+
+    expect(screen.getByRole('button', { name: /持ち物はありますか。/ })).toBeTruthy();
+  });
+
+  it('時間をもらう文と聞き返しを、先頭に並べる', () => {
+    renderConnectedCall();
+
+    const phrases = within(screen.getByRole('group', { name: '即答フレーズ' }))
+      .getAllByRole('button')
+      .map((button) => button.textContent);
+
+    expect(phrases.slice(0, 2)).toEqual(['少々お待ちください。', 'もう一度お願いします。']);
+  });
+});
+
+describe('レビュー指摘: 終了画面の予定の状態', () => {
+  const blank: AppointmentDraft = {
+    title: '内科の予約',
+    date: null,
+    startTime: null,
+    endTime: null,
+    location: 'ひまわり医院',
+    details: '',
+  };
+
+  function endCall(appointment: AppointmentDraft, ai: AiMeta) {
+    renderConnectedCall();
+    receive({ type: 'end_call', appointment, ai });
+  }
+
+  it('AIの読み取りに失敗したら、予定があるような入力欄を出さず、手で追加できるようにする', () => {
+    endCall(blank, { source: 'fallback', reason: 'timeout' });
+
+    expect(screen.getByText(/AIで予定を読み取れませんでした/)).toBeTruthy();
+    expect(screen.queryByLabelText(/日付/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '予定を手で追加' }));
+
+    expect(screen.getByText(/あなたが入力する予定です/)).toBeTruthy();
+    expect(screen.getByLabelText(/日付/)).toHaveProperty('value', '');
+    expect(screen.queryByText('AIの読み取り')).toBeNull();
+  });
+
+  it('AIが読み取った項目に印を付け、本人が直した項目からは外す', () => {
+    endCall(
+      { ...blank, date: '2026-11-12', startTime: '14:30', aiFields: ['date', 'startTime'] },
+      GEMINI,
+    );
+
+    expect(screen.getAllByText('AIの読み取り')).toHaveLength(2);
+
+    fireEvent.change(screen.getByLabelText(/開始/), { target: { value: '15:00' } });
+
+    expect(screen.getAllByText('AIの読み取り')).toHaveLength(1);
+  });
+
+  it('予定のない通話では、予定を求める画面にしない', () => {
+    endCall({ ...blank, aiFields: [] }, GEMINI);
+
+    expect(screen.getByText('通話の中で、決まった予定は見つかりませんでした。')).toBeTruthy();
+    expect(screen.queryByText('要確認')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

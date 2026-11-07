@@ -102,8 +102,15 @@ export const PLAYBACK_STATUSES = ['started', 'ended', 'failed'] as const;
 
 export type PlaybackStatus = (typeof PLAYBACK_STATUSES)[number];
 
+export type AppointmentField = 'title' | 'date' | 'startTime' | 'endTime' | 'location' | 'details';
+
 /** 通話内容から読み取った予定の下書き。分からない項目は推測せず null のまま本人に見せる。 */
 export interface AppointmentDraft {
+  /**
+   * Geminiが値を返した項目。ここにない項目は、既定値（発信のときの入力）か空欄。
+   * 画面でAIの値と本人の入力を区別するために使う。古いサーバーの応答では undefined。
+   */
+  aiFields?: AppointmentField[];
   title: string;
   /** YYYY-MM-DD（Asia/Tokyo） */
   date: string | null;
