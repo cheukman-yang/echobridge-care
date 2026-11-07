@@ -95,7 +95,11 @@ export function CallSetupForm({
           placeholder={profile.partnerPlaceholder}
           className={FIELD_CLASS}
         />
-        <p className="text-[13px] text-ink-2">画面の見出しと、通話後の予定の場所に使います。</p>
+        <p className="text-[13px] text-ink-2">
+          {profile.partnerIsPlace
+            ? '画面の見出し、相手の画面の宛先、通話後の予定の場所に使います。'
+            : '画面の見出しと、相手の画面の宛先に使います。'}
+        </p>
       </div>
 
       <div className="space-y-2">
