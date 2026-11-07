@@ -1,19 +1,12 @@
-import { EventEmitter } from 'node:events';
-import http from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WebSocket } from 'ws';
-import type { WebSocketServer } from 'ws';
-import { attachCallServer } from '../../server/callServer';
-import type { RecognizeStream, SpeechRecognizer } from '../../server/callServer';
+import type { RecognizeStream } from '../../server/callServer';
 import type { GeminiModels } from '../../server/geminiClient';
-import { createAiAssistant } from '../../server/geminiService';
 import { MAX_PATIENT_TEXT_LENGTH, buildGreeting } from '@/lib/callProtocol';
-import type { ServerMessage, SpeechStatus } from '@/lib/callProtocol';
+import { CallTestServer } from '../helpers/callTestServer';
+import type { OpenCall } from '../helpers/callTestServer';
 import {
   TEST_MODEL,
   createFakeModels,
-  createFakeRunner,
   jsonReply,
   requestsField,
   sentContents,
@@ -35,170 +28,32 @@ const EMPTY_APPOINTMENT = {
   details: null,
 };
 
-type MessageType = ServerMessage['type'];
-type MessageOf<T extends MessageType> = Extract<ServerMessage, { type: T }>;
-
-class TestClient {
-  readonly messages: ServerMessage[] = [];
-  private listeners = new Set<() => void>();
-
-  private constructor(private socket: WebSocket) {
-    socket.on('message', (raw) => {
-      this.messages.push(JSON.parse(raw.toString()) as ServerMessage);
-      this.listeners.forEach((listener) => listener());
-    });
-  }
-
-  static connect(url: string): Promise<TestClient> {
-    return new Promise((resolve, reject) => {
-      const socket = new WebSocket(url);
-      const client = new TestClient(socket);
-      socket.once('open', () => resolve(client));
-      socket.once('error', reject);
-    });
-  }
-
-  send(message: object) {
-    this.socket.send(JSON.stringify(message));
-  }
-
-  sendBinary(chunk: Buffer) {
-    this.socket.send(chunk);
-  }
-
-  all<T extends MessageType>(type: T): MessageOf<T>[] {
-    return this.messages.filter((message): message is MessageOf<T> => message.type === type);
-  }
-
-  /** 指定の種類が count 件届くまで待つ。 */
-  waitFor<T extends MessageType>(type: T, count = 1): Promise<MessageOf<T>> {
-    return new Promise((resolve, reject) => {
-      const check = () => {
-        const found = this.all(type);
-        if (found.length >= count) {
-          clearTimeout(timer);
-          this.listeners.delete(check);
-          resolve(found[count - 1]);
-        }
-      };
-      const timer = setTimeout(() => {
-        this.listeners.delete(check);
-        reject(new Error(`timed out waiting for ${type}`));
-      }, 2000);
-      this.listeners.add(check);
-      check();
-    });
-  }
-
-  close() {
-    this.socket.close();
-  }
-}
-
-class FakeRecognizeStream extends EventEmitter {
-  writable = true;
-  written: Buffer[] = [];
-
-  write(chunk: Buffer) {
-    this.written.push(chunk);
-    return true;
-  }
-
-  end() {
-    this.writable = false;
-  }
-
-  speak(transcript: string) {
-    this.emit('data', { results: [{ alternatives: [{ transcript }] }] });
-  }
-}
-
-class FakeSpeech implements SpeechRecognizer {
-  status: SpeechStatus = 'ready';
-  listeners = new Set<(status: SpeechStatus) => void>();
-
-  constructor(readonly createStream: () => RecognizeStream) {}
-
-  onStatusChange(listener: (status: SpeechStatus) => void) {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
-  }
-
-  changeTo(status: SpeechStatus) {
-    this.status = status;
-    this.listeners.forEach((listener) => listener(status));
-  }
-}
-
-interface Harness {
-  patient: TestClient;
-  hospital: TestClient;
-  stream: () => FakeRecognizeStream;
-}
-
 describe('attachCallServer', () => {
-  let server: http.Server;
-  let wss: WebSocketServer;
-  let streams: FakeRecognizeStream[];
-  let speech: FakeSpeech;
-  let clients: TestClient[];
+  let testServer: CallTestServer;
   let logSpy: ReturnType<typeof vi.spyOn>;
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    streams = [];
-    clients = [];
+    testServer = new CallTestServer();
   });
 
-  afterEach(async () => {
-    clients.forEach((client) => client.close());
-    wss.close();
-    await new Promise((resolve) => server.close(resolve));
-  });
+  afterEach(() => testServer.close());
+
+  const listen = (models: GeminiModels | null, createStream?: () => RecognizeStream) =>
+    testServer.listen(models, createStream);
+  const connect = () => testServer.connect();
+  const openCall = (intent?: string) => testServer.openCall(intent);
+  const flush = (call: OpenCall) => testServer.flush(call);
+  const hospitalSays = (call: OpenCall, text: string) => testServer.hospitalSays(call, text);
 
   async function start(
     models: GeminiModels | null,
-    createRecognizeStream: () => RecognizeStream = () => {
-      const stream = new FakeRecognizeStream();
-      streams.push(stream);
-      return stream as unknown as RecognizeStream;
-    },
-  ): Promise<Harness> {
-    server = http.createServer();
-    speech = new FakeSpeech(createRecognizeStream);
-    wss = attachCallServer(server, {
-      ai: createAiAssistant(createFakeRunner(models)),
-      speech,
-    });
-    await new Promise<void>((resolve) => server.listen(0, resolve));
-
-    const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws/call`;
-    const patient = await TestClient.connect(url);
-    const hospital = await TestClient.connect(url);
-    clients = [patient, hospital];
-    return { patient, hospital, stream: () => streams[streams.length - 1] };
-  }
-
-  /** ブロードキャストの順序を使い、それより前のメッセージが届ききったことを保証する。 */
-  async function flush({ patient, hospital }: Harness) {
-    const count = hospital.all('patient_speaking_status').length + 1;
-    patient.send({ type: 'patient_speaking_status', isSpeaking: false });
-    await hospital.waitFor('patient_speaking_status', count);
-    await patient.waitFor('patient_speaking_status', count);
-  }
-
-  async function hospitalSays(harness: Harness, text: string) {
-    const { hospital, stream } = harness;
-    hospital.send({ type: 'hospital_speaking_start' });
-    await hospital.waitFor('hospital_speaking_start', hospital.all('hospital_speaking_start').length + 1);
-    stream().speak(text);
-    await hospital.waitFor('transcript_interim', hospital.all('transcript_interim').length + 1);
-    hospital.send({ type: 'hospital_speech_end' });
-    await hospital.waitFor('transcript_final', hospital.all('transcript_final').length + 1);
+    createRecognizeStream?: () => RecognizeStream,
+  ): Promise<OpenCall> {
+    await listen(models, createRecognizeStream);
+    return openCall();
   }
 
   describe('本人の確認なしに読み上げない', () => {
@@ -233,6 +88,7 @@ describe('attachCallServer', () => {
         type: 'patient_speech',
         text,
         origin: 'typed',
+        seq: 2,
       });
       expect((await patient.waitFor('patient_speech')).text).toBe(text);
     });
@@ -312,13 +168,10 @@ describe('attachCallServer', () => {
 
   describe('通話の基本動作', () => {
     it('発信から応答まで進み、プレビューと同じあいさつを読み上げる', async () => {
-      const { patient, hospital } = await start(createFakeModels(() => jsonReply({})));
+      await listen(createFakeModels(() => jsonReply({})));
       const intent = '内科の初診予約をしたいです';
 
-      patient.send({ type: 'start_call', intent });
-      expect((await hospital.waitFor('start_call')).intent).toBe(intent);
-
-      hospital.send({ type: 'answer_call' });
+      const { patient, hospital } = await openCall(intent);
 
       expect((await patient.waitFor('answer_call')).text).toBe(buildGreeting(intent));
       expect((await hospital.waitFor('answer_call')).text).toBe(buildGreeting(intent));
@@ -326,10 +179,10 @@ describe('attachCallServer', () => {
 
     it('病院の発話を文字にし、Geminiの候補を出所つきで届ける', async () => {
       const models = createFakeModels(() => jsonReply(THREE_SUGGESTIONS));
-      const harness = await start(models);
+      await listen(models);
+      const harness = await openCall('内科の初診予約');
       const { patient } = harness;
 
-      patient.send({ type: 'start_call', intent: '内科の初診予約' });
       await hospitalSays(harness, 'アレルギーはありますか');
 
       expect((await patient.waitFor('transcript_final')).text).toBe('アレルギーはありますか');
@@ -376,18 +229,22 @@ describe('attachCallServer', () => {
       expect(models.generateContent).not.toHaveBeenCalled();
     });
 
-    it('リセットすると全員に伝わり、履歴が消える', async () => {
+    it('リセットするとこの通話の両方に伝わり、記録が残らない', async () => {
       const models = createFakeModels(() => jsonReply(EMPTY_APPOINTMENT));
       const { patient, hospital } = await start(models);
+      const { seatToken } = patient.all('call_joined')[0];
 
       patient.send({ type: 'patient_confirmed_speech', text: '消える文', origin: 'typed' });
       await patient.waitFor('patient_speech');
-      hospital.send({ type: 'reset_call' });
-      await patient.waitFor('reset_call');
-      patient.send({ type: 'end_call' });
-      await patient.waitFor('end_call');
+      patient.send({ type: 'reset_call' });
 
-      expect(sentContents(models.generateContent.mock.calls.at(-1)![0])).not.toContain('消える文');
+      expect((await patient.waitFor('call_closed')).reason).toBe('reset');
+      expect((await hospital.waitFor('call_closed')).reason).toBe('reset');
+
+      const returning = await connect();
+      returning.send({ type: 'join_call', seatToken });
+      expect((await returning.waitFor('call_error')).code).toBe('call_not_found');
+      expect(models.generateContent).not.toHaveBeenCalled();
     });
   });
 
@@ -404,7 +261,7 @@ describe('attachCallServer', () => {
       await patient.waitFor('speech_status');
       await hospital.waitFor('speech_status');
 
-      speech.changeTo('unavailable');
+      testServer.speech.changeTo('unavailable');
 
       expect((await patient.waitFor('speech_status', 2)).status).toBe('unavailable');
       expect((await hospital.waitFor('speech_status', 2)).status).toBe('unavailable');
@@ -413,6 +270,7 @@ describe('attachCallServer', () => {
 
     it('サーバーを閉じたら購読をやめる', async () => {
       await start(null);
+      const { speech, clients, wss } = testServer;
       expect(speech.listeners.size).toBe(1);
 
       clients.forEach((client) => client.close());
@@ -449,9 +307,7 @@ describe('attachCallServer', () => {
       const harness = await start(null, () => {
         attempts += 1;
         if (attempts === 1) return notReady();
-        const stream = new FakeRecognizeStream();
-        streams.push(stream);
-        return stream as unknown as RecognizeStream;
+        return testServer.newStream();
       });
       const { hospital, stream } = harness;
 
@@ -554,9 +410,7 @@ describe('attachCallServer', () => {
       const harness = await start(null, () => {
         attempts += 1;
         if (attempts > 1) throw new Error('speech_not_ready');
-        const stream = new FakeRecognizeStream();
-        streams.push(stream);
-        return stream as unknown as RecognizeStream;
+        return testServer.newStream();
       });
       const { patient, hospital, stream } = harness;
       hospital.send({ type: 'hospital_speaking_start' });
@@ -604,7 +458,6 @@ describe('attachCallServer', () => {
     it('AIが未設定でも通話終了の結果に推測の日時を入れない', async () => {
       const { patient } = await start(null);
 
-      patient.send({ type: 'start_call', intent: '内科の予約' });
       patient.send({ type: 'patient_confirmed_speech', text: '明日の3時でお願いします', origin: 'typed' });
       await patient.waitFor('patient_speech');
       patient.send({ type: 'end_call' });
@@ -673,10 +526,10 @@ describe('attachCallServer', () => {
         if (requestsField(params, 'suggestions')) return jsonReply(THREE_SUGGESTIONS);
         return jsonReply(EMPTY_APPOINTMENT);
       });
-      const harness = await start(models);
+      await listen(models);
+      const harness = await openCall(secret);
       const { patient } = harness;
 
-      patient.send({ type: 'start_call', intent: secret });
       await hospitalSays(harness, secret);
       await patient.waitFor('suggestions');
       patient.send({ type: 'patient_polish_request', requestId: 'r1', text: secret });

@@ -48,6 +48,21 @@ export function SpeechUnavailableNotice({ status }: { status: SpeechStatus | nul
   );
 }
 
+/** 通話の接続や終了を知らせる帯。音声認識の表示と同じ場所に出す。 */
+export function CallNotice({ text }: { text: string | null }) {
+  if (!text) return null;
+  return (
+    <div
+      aria-live="polite"
+      data-testid="call-notice"
+      className="flex items-center gap-1.5 text-[11px] leading-snug text-amber-200 bg-amber-500/10 border-b border-amber-500/40 px-5 py-1.5 z-20"
+    >
+      <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+      <span>{text}</span>
+    </div>
+  );
+}
+
 /** 返答候補の出所を示す見出し。定型文をAIの回答に見せない。 */
 export function SuggestionSourceNote({ ai }: { ai: AiMeta | null }) {
   if (ai?.source === 'fallback') {

@@ -1,11 +1,52 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Phone, Mic, RotateCcw } from 'lucide-react';
-import type { RecordingFailureReason, ServerMessage, SpeechStatus } from '@/lib/callProtocol';
+import React, { useState, useRef, useEffect, useEffectEvent, useCallback } from 'react';
+import { Phone, PhoneOff, Mic } from 'lucide-react';
+import { CallNotice } from '@/components/AiStatusBadge';
+import { useCallChannel, useCallSocket } from '@/hooks/useCallChannel';
+import {
+  CALL_CLOSED_NOTICES,
+  CALL_ERROR_NOTICES,
+  RECONNECTING_NOTICE,
+  SEAT_TAKEN_NOTICE,
+} from '@/lib/callNotices';
+import { normalizeInviteCode, parseInviteFromHash } from '@/lib/callProtocol';
+import type {
+  CallPhase,
+  CallSnapshot,
+  ClientMessage,
+  RecordingFailureReason,
+  ServerMessage,
+  SpeechStatus,
+} from '@/lib/callProtocol';
+import { loadSpokenSeq, saveSpokenSeq } from '@/lib/callSession';
 
 /** 押してから、サーバーの受け付けとマイクの準備がそろうまでは録音中と表示しない。 */
 type RecordingPhase = 'idle' | 'awaiting_server' | 'opening_mic' | 'recording';
+
+type HospitalCallState = 'idle' | 'ringing' | 'connected' | 'ended';
+
+const PHASE_TO_CALL_STATE: Record<CallPhase, HospitalCallState> = {
+  ringing: 'ringing',
+  connected: 'connected',
+  ending: 'ended',
+  ended: 'ended',
+};
+
+const PATIENT_DISCONNECTED_NOTICE = '相手の接続が切れています。';
+
+interface QueuedSpeech {
+  text: string;
+  /** 通話の記録にある発言の番号。自動案内にはない。 */
+  seq?: number;
+}
+
+/** リンクで開いた招待コードを取り出し、アドレスバーと履歴からは消す。 */
+function takeInviteFromUrl(): string | null {
+  const code = parseInviteFromHash(window.location.hash);
+  if (code) window.history.replaceState(null, '', window.location.pathname);
+  return code;
+}
 
 const RECORDING_FAILURE_LABELS: Record<RecordingFailureReason, string> = {
   start_failed: '録音を開始できませんでした。音声は送られていません。',
@@ -28,15 +69,19 @@ function describePtt(
 }
 
 export default function HospitalApp() {
-  const [isConnected, setIsConnected] = useState(false);
-  const [callState, setCallState] = useState<'idle' | 'ringing' | 'connected' | 'ended'>('idle');
+  const [callState, setCallState] = useState<HospitalCallState>('idle');
   const [recordingPhase, setRecordingPhaseState] = useState<RecordingPhase>('idle');
   const [recordingFailure, setRecordingFailure] = useState<RecordingFailureReason | null>(null);
   const [speechStatus, setSpeechStatus] = useState<SpeechStatus | null>(null);
   const [isPatientSpeaking, setIsPatientSpeaking] = useState(false);
+  const [peerConnected, setPeerConnected] = useState(true);
+  const [inviteInput, setInviteInput] = useState('');
+  const [callNotice, setCallNotice] = useState<string | null>(null);
+  // 再読み込みの後は、操作があるまでブラウザが読み上げを止める。
+  const [needsAudioResume, setNeedsAudioResume] = useState(false);
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<any>(null);
+  const channel = useCallChannel('hospital');
+
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -50,46 +95,59 @@ export default function HospitalApp() {
   const ringAudioCtxRef = useRef<AudioContext | null>(null);
   const activeGainRef = useRef<GainNode | null>(null);
 
-  const speechQueueRef = useRef<string[]>([]);
+  const speechQueueRef = useRef<QueuedSpeech[]>([]);
   const isSpeakingRef = useRef<boolean>(false);
+  // 再接続で同じ発言を二度読まないよう、並べた最後の番号を覚える。
+  const lastQueuedSeqRef = useRef(0);
+  const isAudioBlockedRef = useRef(false);
+  // 操作があったページでは、再接続しても読み上げを続けられる。
+  const hasUserGestureRef = useRef(false);
+  const pendingInviteRef = useRef<string | null>(null);
 
-  const processSpeechQueue = useCallback(() => {
-    if (isSpeakingRef.current || speechQueueRef.current.length === 0) return;
+  const markSpoken = useCallback((seq: number | undefined) => {
+    const seatToken = channel.seatTokenRef.current;
+    if (seq !== undefined && seatToken) saveSpokenSeq(seatToken, seq);
+  }, [channel]);
+
+  const processSpeechQueue = useCallback(function processNext() {
+    if (isSpeakingRef.current || isAudioBlockedRef.current || speechQueueRef.current.length === 0) return;
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
 
-    const nextText = speechQueueRef.current.shift();
-    if (!nextText) return;
+    const next = speechQueueRef.current.shift();
+    if (!next) return;
 
     isSpeakingRef.current = true;
-    const utterance = new SpeechSynthesisUtterance(nextText);
+    const utterance = new SpeechSynthesisUtterance(next.text);
     utterance.lang = 'ja-JP';
     utterance.rate = 1.0;
 
-    utterance.onend = () => {
+    const finish = () => {
       isSpeakingRef.current = false;
-      processSpeechQueue();
+      markSpoken(next.seq);
+      processNext();
     };
-
-    utterance.onerror = () => {
-      isSpeakingRef.current = false;
-      processSpeechQueue();
-    };
+    utterance.onend = finish;
+    utterance.onerror = finish;
 
     window.speechSynthesis.speak(utterance);
-  }, []);
+  }, [markSpoken]);
 
-  const queueSpeech = useCallback((text: string) => {
-    speechQueueRef.current.push(text);
+  const queueSpeech = useCallback((text: string, seq?: number) => {
+    if (seq !== undefined) {
+      if (seq <= lastQueuedSeqRef.current) return;
+      lastQueuedSeqRef.current = seq;
+    }
+    speechQueueRef.current.push({ text, seq });
     processSpeechQueue();
   }, [processSpeechQueue]);
 
-  const clearSpeechQueue = () => {
+  const clearSpeechQueue = useCallback(() => {
     speechQueueRef.current = [];
     isSpeakingRef.current = false;
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
-  };
+  }, []);
 
   // 着信音の完全停止処理
   const stopRingtone = useCallback(() => {
@@ -162,12 +220,6 @@ export default function HospitalApp() {
     setRecordingPhaseState(phase);
   }, []);
 
-  const sendControl = useCallback((message: { type: string }) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
-    }
-  }, []);
-
   const releaseMic = useCallback(() => {
     captureAttemptRef.current += 1;
 
@@ -221,9 +273,7 @@ export default function HospitalApp() {
           outputData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(outputData.buffer);
-        }
+        channel.sendAudio(outputData.buffer);
       };
 
       source.connect(processor);
@@ -233,101 +283,178 @@ export default function HospitalApp() {
       if (attempt !== captureAttemptRef.current) return;
       alert('マイクの使用が許可されていません。');
       releaseMic();
-      sendControl({ type: 'hospital_speaking_stop' });
+      channel.send({ type: 'hospital_speaking_stop' });
     }
-  }, [releaseMic, sendControl, setRecordingPhase]);
+  }, [channel, releaseMic, setRecordingPhase]);
 
-  const connectWebSocket = useCallback(() => {
-    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+  /** 通話の音と録音を止める。画面の状態はそのまま。 */
+  const stopCallMedia = useCallback(() => {
+    stopRingtone();
+    clearSpeechQueue();
+    releaseMic();
+  }, [clearSpeechQueue, releaseMic, stopRingtone]);
+
+  /** 通話から離れ、コードの入力画面へ戻す。 */
+  const returnToLobby = useCallback(() => {
+    stopCallMedia();
+    setRecordingFailure(null);
+    setCallState('idle');
+    setIsPatientSpeaking(false);
+    setNeedsAudioResume(false);
+    isAudioBlockedRef.current = false;
+    lastQueuedSeqRef.current = 0;
+  }, [stopCallMedia]);
+
+  /** サーバーの状態に画面を合わせる。切断中に送られた文は、ここから読み上げる。 */
+  const applySnapshot = useCallback((snapshot: CallSnapshot, seatToken: string) => {
+    const nextState = PHASE_TO_CALL_STATE[snapshot.phase];
+    setCallState(nextState);
+    setIsPatientSpeaking(snapshot.isPatientSpeaking);
+    setPeerConnected(snapshot.peerConnected);
+    setCallNotice(null);
+
+    if (nextState === 'ringing') {
+      startRingtone();
       return;
     }
+    stopRingtone();
+    if (nextState !== 'connected') return;
 
-    const ws = new WebSocket('ws://localhost:8080/ws/call');
-    wsRef.current = ws;
+    if (!hasUserGestureRef.current) {
+      isAudioBlockedRef.current = true;
+      setNeedsAudioResume(true);
+    }
+    lastQueuedSeqRef.current = Math.max(lastQueuedSeqRef.current, loadSpokenSeq(seatToken));
+    snapshot.turns
+      .filter((turn) => turn.sender === '患者')
+      .forEach((turn) => queueSpeech(turn.text, turn.seq));
+  }, [queueSpeech, startRingtone, stopRingtone]);
 
-    ws.onopen = () => {
-      setIsConnected(true);
-    };
+  const handleServerMessage = useCallback((data: ServerMessage) => {
+    if (data.type === 'speech_status') {
+      setSpeechStatus(data.status);
+    } else if (data.type === 'call_joined') {
+      applySnapshot(data.snapshot, data.seatToken);
+    } else if (data.type === 'call_error') {
+      const notice = CALL_ERROR_NOTICES[data.code];
+      if (data.code === 'call_not_found') returnToLobby();
+      if (notice) setCallNotice(notice);
+    } else if (data.type === 'call_closed') {
+      returnToLobby();
+      // 終了後の保存期限は患者の結果の話なので、病院役には知らせない。
+      if (data.reason !== 'retention_expired') setCallNotice(CALL_CLOSED_NOTICES[data.reason]);
+    } else if (data.type === 'peer_status') {
+      setPeerConnected(data.connected);
+    } else if (data.type === 'hospital_speaking_start') {
+      if (recordingPhaseRef.current === 'awaiting_server') beginCapture();
+    } else if (data.type === 'hospital_recording_failed') {
+      setRecordingFailure(data.reason);
+      releaseMic();
+    } else if (data.type === 'answer_call') {
+      stopRingtone(); // 念のため応答メッセージ受信時にも確実に停止
+      setCallState('connected');
+      queueSpeech(data.text, data.seq);
+    } else if (data.type === 'patient_typing_notice') {
+      queueSpeech(data.text);
+    } else if (data.type === 'patient_speech') {
+      queueSpeech(data.text, data.seq);
+    } else if (data.type === 'patient_speaking_status') {
+      setIsPatientSpeaking(data.isSpeaking);
+    } else if (data.type === 'call_ending') {
+      stopCallMedia();
+      setCallState('ended');
+    }
+  }, [applySnapshot, beginCapture, queueSpeech, releaseMic, returnToLobby, stopCallMedia, stopRingtone]);
 
-    ws.onclose = () => {
-      setIsConnected(false);
+  const isConnected = useCallSocket(channel, {
+    onMessage: handleServerMessage,
+    onDisconnected: () => {
       setSpeechStatus(null);
       if (recordingPhaseRef.current !== 'idle') {
         setRecordingFailure('stream_failed');
         releaseMic();
       }
-      reconnectTimeoutRef.current = setTimeout(connectWebSocket, 1500);
-    };
+    },
+    onSeatTaken: () => {
+      returnToLobby();
+      setCallNotice(SEAT_TAKEN_NOTICE);
+    },
+    chooseJoin: (seatToken): ClientMessage | null => {
+      // リンクを開いたのは本人の操作なので、前の通話に戻るより優先する。
+      const inviteCode = pendingInviteRef.current ?? takeInviteFromUrl();
+      pendingInviteRef.current = null;
+      if (inviteCode) return { type: 'join_call', inviteCode };
+      return seatToken ? { type: 'join_call', seatToken } : null;
+    },
+  });
 
-    ws.onerror = () => {
-      setIsConnected(false);
-    };
+  const joinWithInvite = useEffectEvent((inviteCode: string) => {
+    if (callState === 'ringing' || callState === 'connected') {
+      setCallNotice('通話中は別の通話に参加できません。');
+      return;
+    }
+    if (callState === 'ended') {
+      channel.send({ type: 'leave_call' });
+      channel.forgetSeat();
+      returnToLobby();
+    }
+    setCallNotice(null);
+    // 切断中ならフラグメントはもう消えているので、つながったときに使えるよう覚えておく。
+    if (!channel.send({ type: 'join_call', inviteCode })) pendingInviteRef.current = inviteCode;
+  });
 
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data) as ServerMessage;
-        if (data.type === 'speech_status') {
-          setSpeechStatus(data.status);
-        } else if (data.type === 'hospital_speaking_start') {
-          if (recordingPhaseRef.current === 'awaiting_server') beginCapture();
-        } else if (data.type === 'hospital_recording_failed') {
-          setRecordingFailure(data.reason);
-          releaseMic();
-        } else if (data.type === 'start_call') {
-          setRecordingFailure(null);
-          setCallState('ringing');
-          startRingtone();
-        } else if (data.type === 'answer_call') {
-          stopRingtone(); // 念のため応答メッセージ受信時にも確実に停止
-          if (data.text) queueSpeech(data.text);
-        } else if (data.type === 'patient_typing_notice') {
-          if (data.text) queueSpeech(data.text);
-        } else if (data.type === 'patient_speech') {
-          if (data.text) queueSpeech(data.text);
-        } else if (data.type === 'patient_speaking_status') {
-          setIsPatientSpeaking(data.isSpeaking);
-        } else if (data.type === 'call_ending' || data.type === 'end_call') {
-          stopRingtone();
-          clearSpeechQueue();
-          releaseMic();
-          setCallState('ended');
-        } else if (data.type === 'reset_call') {
-          stopRingtone();
-          clearSpeechQueue();
-          releaseMic();
-          setRecordingFailure(null);
-          setCallState('idle');
-          setIsPatientSpeaking(false);
-        }
-      } catch {}
-    };
-  }, [beginCapture, queueSpeech, releaseMic, startRingtone, stopRingtone]);
-
+  // 開いているタブに別の招待リンクを貼ると、再読み込みせずフラグメントだけが変わる。
   useEffect(() => {
-    connectWebSocket();
-    return () => {
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      stopRingtone();
-      clearSpeechQueue();
-      releaseMic();
-      if (wsRef.current) wsRef.current.close();
+    const onHashChange = () => {
+      const inviteCode = takeInviteFromUrl();
+      if (inviteCode) joinWithInvite(inviteCode);
     };
-  }, [connectWebSocket, releaseMic, stopRingtone]);
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
 
-  const handleAnswerCall = () => {
-    stopRingtone(); // ボタン押下時に即時停止
-    setCallState('connected');
-    sendControl({ type: 'answer_call' });
+  useEffect(() => stopCallMedia, [stopCallMedia]);
+
+  const handleJoinByCode = (event: React.FormEvent) => {
+    event.preventDefault();
+    const inviteCode = normalizeInviteCode(inviteInput);
+    if (!inviteCode) return;
+    hasUserGestureRef.current = true;
+    setCallNotice(null);
+    if (channel.send({ type: 'join_call', inviteCode })) {
+      setInviteInput('');
+    }
   };
 
-  const handleGlobalReset = () => {
-    stopRingtone();
-    clearSpeechQueue();
-    releaseMic();
-    setRecordingFailure(null);
-    sendControl({ type: 'reset_call' });
-    setCallState('idle');
-    setIsPatientSpeaking(false);
+  const handleAnswerCall = () => {
+    hasUserGestureRef.current = true;
+    // 切断中に押しても応答にはならない。再接続の帯が出ているので、着信の画面に留める。
+    if (!channel.send({ type: 'answer_call' })) return;
+    stopRingtone(); // ボタン押下時に即時停止
+    setCallState('connected');
+  };
+
+  /** 操作があるまで止まっていた読み上げを再開する。 */
+  const handleResumeAudio = () => {
+    hasUserGestureRef.current = true;
+    isAudioBlockedRef.current = false;
+    setNeedsAudioResume(false);
+    processSpeechQueue();
+  };
+
+  const handleHangUp = () => {
+    // 切断中は送れない。再接続の帯が出ているので、画面はそのままにする。
+    if (!channel.send({ type: 'end_call' })) return;
+    stopCallMedia();
+    setCallState('ended');
+  };
+
+  /** この通話の席を手放す。患者の画面や通話の記録は消さない。 */
+  const handleLeaveCall = () => {
+    channel.send({ type: 'leave_call' });
+    channel.forgetSeat();
+    setCallNotice(null);
+    returnToLobby();
   };
 
   // 切断中は speechStatus が null になる。unavailable で押すと、サーバーが認証を確認し直す。
@@ -341,28 +468,23 @@ export default function HospitalApp() {
     if (recordingPhase !== 'idle' || !canStartRecording || isSpeakingRef.current) return;
     setRecordingFailure(null);
     setRecordingPhase('awaiting_server');
-    sendControl({ type: 'hospital_speaking_start' });
+    if (!channel.send({ type: 'hospital_speaking_start' })) setRecordingPhase('idle');
   };
 
   const stopRecording = () => {
     if (recordingPhase === 'idle') return;
     releaseMic();
-    sendControl({ type: 'hospital_speech_end' });
+    channel.send({ type: 'hospital_speech_end' });
   };
+
+  const connectionNotice = !isConnected && callState !== 'idle'
+    ? RECONNECTING_NOTICE
+    : callState === 'connected' && !peerConnected
+    ? PATIENT_DISCONNECTED_NOTICE
+    : null;
 
   return (
     <div className="flex h-screen bg-slate-950 items-center justify-center p-4 relative select-none">
-      <div className="absolute top-4 right-6 z-50">
-        <button
-          onClick={handleGlobalReset}
-          className="flex items-center gap-1.5 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 px-3 py-1.5 rounded-full text-xs font-medium shadow-md transition active:scale-95"
-          title="両端末を初期待機状態にリセット"
-        >
-          <RotateCcw className="w-3.5 h-3.5 text-green-400" />
-          <span>全体リセット</span>
-        </button>
-      </div>
-
       <div className="w-[360px] h-[780px] bg-slate-800 rounded-[3rem] border-[10px] border-slate-700 relative overflow-hidden flex flex-col shadow-2xl">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-slate-700 rounded-b-2xl z-10" />
 
@@ -374,11 +496,37 @@ export default function HospitalApp() {
           />
         </header>
 
+        <CallNotice text={connectionNotice ?? callNotice} />
+
         <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-8">
           {callState === 'idle' && (
-            <div className="text-slate-500 text-sm">
-              {isConnected ? '着信待機中...' : 'サーバー接続待機中...'}
-            </div>
+            <form onSubmit={handleJoinByCode} className="w-full space-y-3 select-text">
+              <div className="space-y-1">
+                <h2 className="text-base font-bold text-white">通話コードを入力</h2>
+                <p className="text-xs text-slate-400">
+                  患者側に表示されたコードを入力するか、招待リンクを開いてください
+                </p>
+              </div>
+              <input
+                type="text"
+                aria-label="通話コード"
+                value={inviteInput}
+                onChange={(event) => setInviteInput(event.target.value)}
+                placeholder="XXXXX-XXXXX"
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                maxLength={32}
+                className="w-full bg-slate-900 border border-slate-600 rounded-xl px-3 py-2.5 text-center font-mono text-base tracking-widest text-white focus:outline-none focus:border-green-500"
+              />
+              <button
+                type="submit"
+                disabled={!isConnected || !inviteInput.trim()}
+                className="w-full bg-green-600 hover:bg-green-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold py-2.5 rounded-xl transition active:scale-[0.98]"
+              >
+                {isConnected ? '通話に参加する' : 'サーバー接続待機中...'}
+              </button>
+            </form>
           )}
 
           {callState === 'ringing' && (
@@ -393,14 +541,44 @@ export default function HospitalApp() {
               >
                 応答する
               </button>
+              <button
+                type="button"
+                onClick={handleLeaveCall}
+                className="block mx-auto text-xs text-slate-300 underline px-2 py-1"
+              >
+                応答しない
+              </button>
             </div>
           )}
 
-          {callState === 'connected' && (
-            <div className="w-full flex flex-col items-center space-y-12">
-              <div className="text-green-400 font-bold flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                通話中
+          {callState === 'connected' && needsAudioResume && (
+            <div className="space-y-4">
+              <p className="text-sm text-slate-300">読み上げを再開するにはボタンを押してください</p>
+              <button
+                type="button"
+                onClick={handleResumeAudio}
+                className="bg-green-500 hover:bg-green-600 text-white px-8 py-3 rounded-full font-bold shadow-lg transition active:scale-95"
+              >
+                通話に戻る
+              </button>
+            </div>
+          )}
+
+          {callState === 'connected' && !needsAudioResume && (
+            <div className="w-full flex flex-col items-center space-y-10">
+              <div className="w-full flex items-center justify-between">
+                <div className="text-green-400 font-bold flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                  通話中
+                </div>
+                <button
+                  type="button"
+                  onClick={handleHangUp}
+                  className="flex items-center gap-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 px-3 py-1 rounded-full text-xs font-bold transition active:scale-95"
+                >
+                  <PhoneOff className="w-3.5 h-3.5" />
+                  <span>通話を切る</span>
+                </button>
               </div>
 
               <button
@@ -444,7 +622,7 @@ export default function HospitalApp() {
             <div className="space-y-4">
               <div className="text-slate-400 text-sm">通話が終了しました</div>
               <button
-                onClick={handleGlobalReset}
+                onClick={handleLeaveCall}
                 className="bg-slate-700 hover:bg-slate-600 text-white px-5 py-2 rounded-xl text-xs font-semibold active:scale-95"
               >
                 待機画面に戻る

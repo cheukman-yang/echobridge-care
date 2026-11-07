@@ -6,22 +6,40 @@ import { AppointmentReviewCard } from '@/components/AppointmentReviewCard';
 import type { TranscriptLine } from '@/components/AppointmentReviewCard';
 import {
   AiStatusBadge,
+  CallNotice,
   SpeechUnavailableNotice,
   SuggestionSourceNote,
 } from '@/components/AiStatusBadge';
+import { CallInviteCard } from '@/components/CallInviteCard';
 import { PolishReviewPanel } from '@/components/PolishReviewPanel';
+import { useCallChannel, useCallSocket } from '@/hooks/useCallChannel';
 import type { AiMeta, AiStatus } from '@/lib/aiMeta';
+import {
+  CALL_CLOSED_NOTICES,
+  CALL_ERROR_NOTICES,
+  PEER_DISCONNECTED_NOTICE,
+  RECONNECTING_NOTICE,
+  SEAT_TAKEN_NOTICE,
+} from '@/lib/callNotices';
 import {
   MAX_PATIENT_TEXT_LENGTH,
   TYPING_NOTICE_TEXT,
   buildGreeting,
 } from '@/lib/callProtocol';
-import type { AppointmentDraft, ServerMessage, SpeechOrigin, SpeechStatus, SuggestionItem } from '@/lib/callProtocol';
+import type {
+  AppointmentResult,
+  CallInvite,
+  CallPhase,
+  CallSnapshot,
+  CallTurn,
+  ServerMessage,
+  SpeechOrigin,
+  SpeechStatus,
+  SuggestionItem,
+} from '@/lib/callProtocol';
 import { INITIAL_COMPOSER, composerReducer, resolveConfirmedSpeech } from '@/lib/composer';
 import type { SpeechChoice } from '@/lib/composer';
 
-const WS_URL = 'ws://localhost:8080/ws/call';
-const RECONNECT_DELAY_MS = 1500;
 const HOSPITAL_IDLE_NOTICE_MS = 5000;
 
 const TypewriterText = ({
@@ -79,16 +97,33 @@ interface ChatMessage {
   sender: 'patient' | 'hospital';
   text: string;
   origin?: MessageOrigin;
+  /** 再接続で取り戻した発言。すでに表示した文なので、打ち直しの演出をしない。 */
+  restored?: boolean;
 }
 
 interface PendingSpeech {
   text: string;
   origin: SpeechOrigin;
+  seq: number;
 }
 
-interface AppointmentResult {
-  appointment: AppointmentDraft;
-  ai: AiMeta;
+type PatientCallState = 'idle' | 'ringing' | 'connected' | 'analyzing' | 'summary';
+
+const PHASE_TO_CALL_STATE: Record<CallPhase, PatientCallState> = {
+  ringing: 'ringing',
+  connected: 'connected',
+  ending: 'analyzing',
+  ended: 'summary',
+};
+
+/** 発言の id は seq にそろえ、再接続の前後で同じ発言を別物として描き直さない。 */
+function turnToMessage(turn: CallTurn): Omit<ChatMessage, 'restored'> {
+  return {
+    id: String(turn.seq),
+    sender: turn.sender === '病院受付' ? 'hospital' : 'patient',
+    text: turn.text,
+    origin: turn.origin,
+  };
 }
 
 /** 読み上げた文がどの経路で確定したかを、吹き出しの上に出す。 */
@@ -108,8 +143,7 @@ function speakerLabel(message: ChatMessage): string {
 }
 
 export default function PatientApp() {
-  const [isConnected, setIsConnected] = useState(false);
-  const [callState, setCallState] = useState<'idle' | 'ringing' | 'connected' | 'analyzing' | 'summary'>('idle');
+  const [callState, setCallState] = useState<PatientCallState>('idle');
   const [intent, setIntent] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [patientInput, setPatientInput] = useState('');
@@ -127,6 +161,11 @@ export default function PatientApp() {
   const [suggestionsAi, setSuggestionsAi] = useState<AiMeta | null>(null);
   const [composer, dispatchComposer] = useReducer(composerReducer, INITIAL_COMPOSER);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [invite, setInvite] = useState<CallInvite | null>(null);
+  const [peerConnected, setPeerConnected] = useState(false);
+  const [callNotice, setCallNotice] = useState<string | null>(null);
+
+  const channel = useCallChannel('patient');
 
   const [isTypingNoticeActive, setIsTypingNoticeActive] = useState(false);
   // WebSocketの受信処理から最新値を読むためのref。stateを依存に入れると接続を張り直してしまう。
@@ -135,19 +174,19 @@ export default function PatientApp() {
   const hospitalIdleTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const wsRef = useRef<WebSocket | null>(null);
   const messageIdRef = useRef(0);
   const polishRequestIdRef = useRef(0);
 
-  const createMessage = useCallback((message: Omit<ChatMessage, 'id'>): ChatMessage => {
+  /** 通知のようにサーバーの記録にない吹き出しを足す。 */
+  const appendLocalMessage = useCallback((message: Omit<ChatMessage, 'id'>) => {
     messageIdRef.current += 1;
-    return { id: String(messageIdRef.current), ...message };
+    const created = { id: `local-${messageIdRef.current}`, ...message };
+    setMessages((prev) => [...prev, created]);
   }, []);
 
-  const appendMessage = useCallback((message: Omit<ChatMessage, 'id'>) => {
-    const created = createMessage(message);
-    setMessages((prev) => [...prev, created]);
-  }, [createMessage]);
+  const appendTurn = useCallback((turn: CallTurn) => {
+    setMessages((prev) => [...prev, turnToMessage(turn)]);
+  }, []);
 
   const setTypingNoticeActive = useCallback((active: boolean) => {
     typingNoticeActiveRef.current = active;
@@ -164,24 +203,21 @@ export default function PatientApp() {
   const triggerIdleTimer = useCallback(() => {
     clearIdleTimer();
     hospitalIdleTimerRef.current = setTimeout(() => {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      if (channel.send({ type: 'patient_typing_notice' })) {
         setTypingNoticeActive(true);
-        appendMessage({ sender: 'patient', text: TYPING_NOTICE_TEXT, origin: 'notice' });
-        wsRef.current.send(JSON.stringify({ type: 'patient_typing_notice' }));
-        wsRef.current.send(JSON.stringify({ type: 'patient_speaking_status', isSpeaking: true }));
+        appendLocalMessage({ sender: 'patient', text: TYPING_NOTICE_TEXT, origin: 'notice' });
+        channel.send({ type: 'patient_speaking_status', isSpeaking: true });
       }
     }, HOSPITAL_IDLE_NOTICE_MS);
-  }, [appendMessage, clearIdleTimer, setTypingNoticeActive]);
+  }, [appendLocalMessage, channel, clearIdleTimer, setTypingNoticeActive]);
 
   const handleNoticeComplete = useCallback(() => {
     setTypingNoticeActive(false);
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'patient_speaking_status', isSpeaking: false }));
-    }
+    channel.send({ type: 'patient_speaking_status', isSpeaking: false });
     const queued = pendingSpeechQueueRef.current;
     pendingSpeechQueueRef.current = [];
-    queued.forEach(({ text, origin }) => appendMessage({ sender: 'patient', text, origin }));
-  }, [appendMessage, setTypingNoticeActive]);
+    queued.forEach(({ text, origin, seq }) => appendTurn({ sender: '患者', text, origin, seq }));
+  }, [appendTurn, channel, setTypingNoticeActive]);
 
   const resetLocalCall = useCallback(() => {
     clearIdleTimer();
@@ -196,9 +232,29 @@ export default function PatientApp() {
     setAppointmentResult(null);
     setIsGenerating(false);
     setSendError(null);
+    setInvite(null);
+    setPeerConnected(false);
     setTypingNoticeActive(false);
     dispatchComposer({ type: 'close' });
     pendingSpeechQueueRef.current = [];
+  }, [clearIdleTimer, setTypingNoticeActive]);
+
+  /** サーバーの状態に画面を合わせる。切断中に届かなかった分もここで取り戻す。 */
+  const applySnapshot = useCallback((snapshot: CallSnapshot) => {
+    clearIdleTimer();
+    setTypingNoticeActive(false);
+    pendingSpeechQueueRef.current = [];
+    setCallState(PHASE_TO_CALL_STATE[snapshot.phase]);
+    setMessages(snapshot.turns.map((turn) => ({ ...turnToMessage(turn), restored: true })));
+    setSuggestions(snapshot.suggestions?.suggestions ?? []);
+    setSuggestionsAi(snapshot.suggestions?.ai ?? null);
+    setIsGenerating(snapshot.isGeneratingSuggestions);
+    setIsHospitalSpeaking(snapshot.isHospitalSpeaking);
+    setLiveHospitalText('');
+    setAppointmentResult(snapshot.appointment);
+    setInvite(snapshot.invite);
+    setPeerConnected(snapshot.peerConnected);
+    setCallNotice(null);
   }, [clearIdleTimer, setTypingNoticeActive]);
 
   const handleServerMessage = useCallback((data: ServerMessage) => {
@@ -208,9 +264,33 @@ export default function PatientApp() {
       setLastAi(null);
     } else if (data.type === 'speech_status') {
       setSpeechStatus(data.status);
+    } else if (data.type === 'call_joined') {
+      applySnapshot(data.snapshot);
+    } else if (data.type === 'call_error') {
+      const notice = CALL_ERROR_NOTICES[data.code];
+      if (data.code === 'call_not_found') {
+        resetLocalCall();
+      } else if (!channel.hasSeat()) {
+        // 発信を断られた。入力した用件は残し、そのままかけ直せるようにする。
+        setCallState('idle');
+      }
+      if (notice) setCallNotice(notice);
+    } else if (data.type === 'call_closed') {
+      // リセットは本人の操作で、画面はもう戻っている。
+      if (data.reason === 'reset') return;
+      if (data.reason === 'retention_expired') {
+        // 確認中の予定は画面に残す。カレンダーへの追加にサーバーは要らない。
+        setCallNotice(CALL_CLOSED_NOTICES.retention_expired);
+        return;
+      }
+      resetLocalCall();
+      setCallNotice(CALL_CLOSED_NOTICES[data.reason]);
+    } else if (data.type === 'peer_status') {
+      setPeerConnected(data.connected);
     } else if (data.type === 'answer_call') {
       setCallState('connected');
-      setMessages([createMessage({ sender: 'patient', text: data.text, origin: 'greeting' })]);
+      setInvite(null);
+      setMessages([turnToMessage({ sender: '患者', text: data.text, origin: 'greeting', seq: data.seq })]);
     } else if (data.type === 'hospital_speaking_start') {
       clearIdleTimer();
       setIsHospitalSpeaking(true);
@@ -224,7 +304,7 @@ export default function PatientApp() {
     } else if (data.type === 'transcript_final') {
       setIsHospitalSpeaking(false);
       setLiveHospitalText('');
-      appendMessage({ sender: 'hospital', text: data.text });
+      appendTurn({ sender: '病院受付', text: data.text, seq: data.seq });
       triggerIdleTimer();
     } else if (data.type === 'generating_suggestions') {
       setIsGenerating(true);
@@ -245,9 +325,9 @@ export default function PatientApp() {
       });
     } else if (data.type === 'patient_speech') {
       if (typingNoticeActiveRef.current) {
-        pendingSpeechQueueRef.current.push({ text: data.text, origin: data.origin });
+        pendingSpeechQueueRef.current.push({ text: data.text, origin: data.origin, seq: data.seq });
       } else {
-        appendMessage({ sender: 'patient', text: data.text, origin: data.origin });
+        appendTurn({ sender: '患者', text: data.text, origin: data.origin, seq: data.seq });
       }
     } else if (data.type === 'call_ending') {
       setCallState('analyzing');
@@ -258,56 +338,24 @@ export default function PatientApp() {
       setLastAi(data.ai);
       setCallState('summary');
       clearIdleTimer();
-    } else if (data.type === 'reset_call') {
-      resetLocalCall();
     }
-  }, [appendMessage, clearIdleTimer, createMessage, resetLocalCall, triggerIdleTimer]);
+  }, [appendTurn, applySnapshot, channel, clearIdleTimer, resetLocalCall, triggerIdleTimer]);
 
-  useEffect(() => {
-    let disposed = false;
-    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  const isConnected = useCallSocket(channel, {
+    onMessage: handleServerMessage,
+    onDisconnected: () => {
+      // 整形結果は切断後の接続へ返すとは限らないので、切れたら待ち続けない。
+      dispatchComposer({ type: 'connection_lost' });
+      // 発信の返事を受け取る前に切れたら、戻る席がないので最初の画面に戻す。
+      if (callState === 'ringing' && !channel.hasSeat()) setCallState('idle');
+    },
+    onSeatTaken: () => {
+      resetLocalCall();
+      setCallNotice(SEAT_TAKEN_NOTICE);
+    },
+  });
 
-    const connect = () => {
-      const ws = new WebSocket(WS_URL);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        if (!disposed) setIsConnected(true);
-      };
-
-      ws.onclose = () => {
-        if (disposed) return;
-        setIsConnected(false);
-        // 整形結果はこの接続にしか届かないので、切れたら待ち続けない。
-        dispatchComposer({ type: 'connection_lost' });
-        retryTimer = setTimeout(connect, RECONNECT_DELAY_MS);
-      };
-
-      ws.onerror = () => {
-        if (!disposed) setIsConnected(false);
-      };
-
-      ws.onmessage = (event) => {
-        if (disposed) return;
-        let data: ServerMessage;
-        try {
-          data = JSON.parse(event.data) as ServerMessage;
-        } catch {
-          return;
-        }
-        handleServerMessage(data);
-      };
-    };
-
-    connect();
-
-    return () => {
-      disposed = true;
-      if (retryTimer) clearTimeout(retryTimer);
-      clearIdleTimer();
-      wsRef.current?.close();
-    };
-  }, [clearIdleTimer, handleServerMessage]);
+  useEffect(() => clearIdleTimer, [clearIdleTimer]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
@@ -322,18 +370,17 @@ export default function PatientApp() {
 
   const handleStartCall = () => {
     if (!intent.trim()) return;
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+    if (!channel.send({ type: 'start_call', intent })) {
       alert('サーバーに接続できていません。');
       return;
     }
+    setCallNotice(null);
     setCallState('ringing');
-    wsRef.current.send(JSON.stringify({ type: 'start_call', intent }));
   };
 
   /** 本人が確定した文を送る唯一の経路。textは書き換えずにそのまま渡す。 */
   const sendConfirmedSpeech = (text: string, origin: SpeechOrigin): boolean => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
+    if (!channel.send({ type: 'patient_confirmed_speech', text, origin })) {
       setSendError('サーバーに接続できていないため、送信できませんでした。');
       return false;
     }
@@ -342,7 +389,6 @@ export default function PatientApp() {
     setSuggestions([]);
     setSuggestionsAi(null);
     setIsGenerating(false);
-    ws.send(JSON.stringify({ type: 'patient_confirmed_speech', text, origin }));
     return true;
   };
 
@@ -358,16 +404,14 @@ export default function PatientApp() {
     const original = patientInput.trim();
     if (!original || composer.phase !== 'editing') return;
 
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
+    polishRequestIdRef.current += 1;
+    const requestId = String(polishRequestIdRef.current);
+    if (!channel.send({ type: 'patient_polish_request', requestId, text: original })) {
       setSendError('サーバーに接続できていないため、AIに依頼できませんでした。');
       return;
     }
     setSendError(null);
-    polishRequestIdRef.current += 1;
-    const requestId = String(polishRequestIdRef.current);
     dispatchComposer({ type: 'request', requestId, original });
-    ws.send(JSON.stringify({ type: 'patient_polish_request', requestId, text: original }));
   };
 
   const handleReviewSend = (choice: SpeechChoice) => {
@@ -396,36 +440,46 @@ export default function PatientApp() {
   };
 
   const handleEndCall = () => {
+    if (!channel.send({ type: 'end_call' })) {
+      setSendError('サーバーに接続できていないため、通話を終了できませんでした。');
+      return;
+    }
     setCallState('analyzing');
     clearIdleTimer();
     dispatchComposer({ type: 'close' });
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'end_call' }));
-    }
   };
 
-  const handleGlobalReset = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'reset_call' }));
-    }
+  /** この通話だけを閉じる。ほかの通話には届かない。 */
+  const handleResetCall = () => {
+    channel.send({ type: 'reset_call' });
+    channel.forgetSeat();
+    setCallNotice(null);
     resetLocalCall();
   };
 
   const isPolishing = composer.phase === 'polishing';
   const canWrite = !isHospitalSpeaking && !isPolishing;
 
+  const connectionNotice = !isConnected && callState !== 'idle'
+    ? RECONNECTING_NOTICE
+    : callState === 'connected' && !peerConnected
+    ? PEER_DISCONNECTED_NOTICE
+    : null;
+
   return (
     <div className="flex h-screen bg-slate-950 items-center justify-center p-4 relative">
-      <div className="absolute top-4 right-6 z-50">
-        <button
-          onClick={handleGlobalReset}
-          className="flex items-center gap-1.5 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 px-3 py-1.5 rounded-full text-xs font-medium shadow-md transition active:scale-95"
-          title="両端末を初期待機状態にリセット"
-        >
-          <RotateCcw className="w-3.5 h-3.5 text-indigo-400" />
-          <span>全体リセット</span>
-        </button>
-      </div>
+      {callState !== 'idle' && (
+        <div className="absolute top-4 right-6 z-50">
+          <button
+            onClick={handleResetCall}
+            className="flex items-center gap-1.5 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 px-3 py-1.5 rounded-full text-xs font-medium shadow-md transition active:scale-95"
+            title="この通話だけを終了して最初の画面に戻ります。記録は残りません"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-indigo-400" />
+            <span>この通話をリセット</span>
+          </button>
+        </div>
+      )}
 
       <div className="w-[360px] h-[780px] max-h-full bg-slate-900 rounded-[3rem] border-[10px] border-slate-700 relative overflow-hidden flex flex-col shadow-2xl">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-slate-700 rounded-b-2xl z-10" />
@@ -453,6 +507,7 @@ export default function PatientApp() {
         </header>
 
         <SpeechUnavailableNotice status={speechStatus} />
+        <CallNotice text={connectionNotice ?? callNotice} />
 
         {callState === 'idle' && (
           <div className="flex-1 flex flex-col p-6 justify-center gap-4">
@@ -490,12 +545,7 @@ export default function PatientApp() {
         )}
 
         {callState === 'ringing' && (
-          <div className="flex-1 flex flex-col items-center justify-center animate-pulse gap-4">
-            <div className="w-20 h-20 rounded-full bg-indigo-500/20 flex items-center justify-center">
-              <Phone className="w-10 h-10 text-indigo-400" />
-            </div>
-            <p className="text-indigo-300 font-bold text-sm">病院の応答を待っています...</p>
-          </div>
+          <CallInviteCard invite={invite} peerConnected={peerConnected} onCancel={handleResetCall} />
         )}
 
         {callState === 'connected' && (
@@ -511,7 +561,7 @@ export default function PatientApp() {
                       msg.sender === 'patient' ? 'bg-indigo-600 text-white rounded-tr-sm' : 'bg-slate-700 text-slate-100 rounded-tl-sm'
                     }`}
                   >
-                    {msg.sender === 'patient' ? (
+                    {msg.sender === 'patient' && !msg.restored ? (
                       <TypewriterText
                         text={msg.text}
                         speed={230}
@@ -643,7 +693,7 @@ export default function PatientApp() {
             appointment={appointmentResult.appointment}
             ai={appointmentResult.ai}
             transcript={transcript}
-            onBack={handleGlobalReset}
+            onBack={handleResetCall}
           />
         )}
       </div>

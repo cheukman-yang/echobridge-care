@@ -12,7 +12,7 @@ export class FakeWebSocket {
   sent: Record<string, unknown>[] = [];
   audio: ArrayBuffer[] = [];
   onopen: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number }) => void) | null = null;
   onerror: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
 
@@ -37,9 +37,9 @@ export class FakeWebSocket {
     this.onopen?.();
   }
 
-  drop() {
+  drop(code = 1006) {
     this.readyState = FakeWebSocket.CLOSED;
-    this.onclose?.();
+    this.onclose?.({ code });
   }
 
   receive(message: ServerMessage) {

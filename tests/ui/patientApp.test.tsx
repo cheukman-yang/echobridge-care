@@ -5,9 +5,11 @@ import PatientApp from '@/app/page';
 import type { AiMeta } from '@/lib/aiMeta';
 import { buildGreeting } from '@/lib/callProtocol';
 import type { AppointmentDraft, ServerMessage } from '@/lib/callProtocol';
+import { SEAT_TOKEN, callJoined } from '../helpers/callMessages';
 import { FakeWebSocket } from '../helpers/fakeWebSocket';
 
 const GEMINI: AiMeta = { source: 'gemini', model: 'test-model' };
+const INVITE = { code: 'ABCDE12345', expiresAt: Date.UTC(2026, 10, 7, 6, 30) };
 
 function socket() {
   return FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
@@ -20,7 +22,8 @@ function receive(message: ServerMessage) {
 function renderConnectedCall() {
   render(<PatientApp />);
   act(() => socket().open());
-  receive({ type: 'answer_call', text: 'お電話しております。' });
+  receive(callJoined('patient', { phase: 'ringing', invite: INVITE, peerConnected: true }));
+  receive({ type: 'answer_call', text: 'お電話しております。', seq: 1 });
 }
 
 const confirmedSpeech = () => socket().sentOfType('patient_confirmed_speech');
@@ -48,6 +51,7 @@ function polishResult(
 beforeEach(() => {
   FakeWebSocket.instances = [];
   vi.stubGlobal('WebSocket', FakeWebSocket);
+  window.sessionStorage.clear();
 });
 
 afterEach(() => {
@@ -189,8 +193,8 @@ describe('AIの整形案の確認', () => {
     renderConnectedCall();
     const requestId = requestPolish('いいえ');
 
-    receive({ type: 'reset_call' });
-    receive({ type: 'answer_call', text: 'お電話しております。' });
+    receive({ type: 'call_closed', reason: 'abandoned' });
+    receive(callJoined('patient', { turns: [{ seq: 1, sender: '患者', text: 'お電話しております。' }] }));
     polishResult(requestId, 'いいえ', '別の文');
 
     expect(screen.queryByLabelText(/AIの案/)).toBeNull();
@@ -394,7 +398,7 @@ describe('通話の接続', () => {
     vi.useFakeTimers();
     renderConnectedCall();
 
-    receive({ type: 'transcript_final', text: 'アレルギーはありますか' });
+    receive({ type: 'transcript_final', text: 'アレルギーはありますか', seq: 2 });
     act(() => {
       vi.advanceTimersByTime(5000);
     });
@@ -418,12 +422,12 @@ describe('通話の接続', () => {
   it('入力中の通知の間に送った文は、通知の後に表示する', () => {
     vi.useFakeTimers();
     renderConnectedCall();
-    receive({ type: 'transcript_final', text: '質問です' });
+    receive({ type: 'transcript_final', text: '質問です', seq: 2 });
     act(() => {
       vi.advanceTimersByTime(5000);
     });
 
-    receive({ type: 'patient_speech', text: '待たせました', origin: 'typed' });
+    receive({ type: 'patient_speech', text: '待たせました', origin: 'typed', seq: 3 });
     expect(screen.queryByText('あなた・入力した文')).toBeNull();
 
     act(() => {
@@ -492,7 +496,7 @@ describe('通話後の予定の確認', () => {
 
   it('通話の記録を見返せる', () => {
     renderConnectedCall();
-    receive({ type: 'transcript_final', text: '水曜の10時です' });
+    receive({ type: 'transcript_final', text: '水曜の10時です', seq: 2 });
     receive({ type: 'end_call', appointment: unknown, ai: GEMINI });
 
     const details = screen.getByText('通話の記録を見る').closest('details');
@@ -530,5 +534,328 @@ describe('音声認識を使えないときの表示', () => {
     receive({ type: 'speech_status', status: 'checking' });
 
     expect(notice()).toBeNull();
+  });
+});
+
+describe('発信と招待', () => {
+  const placeCall = () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+    fireEvent.change(screen.getByPlaceholderText('例：内科の初診予約をしたいです'), {
+      target: { value: '内科の初診予約' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /発信する/ }));
+  };
+
+  it('発信すると用件を送り、席が決まるまで招待を出さない', () => {
+    placeCall();
+
+    expect(socket().sentOfType('start_call')).toEqual([{ type: 'start_call', intent: '内科の初診予約' }]);
+    expect(screen.getByText('通話を準備しています...')).toBeTruthy();
+    expect(screen.queryByTestId('invite-code')).toBeNull();
+  });
+
+  it('招待のコードとリンクを表示する。コードはクエリに載せない', () => {
+    placeCall();
+
+    receive(callJoined('patient', { phase: 'ringing', invite: INVITE, peerConnected: false }));
+
+    expect(screen.getByTestId('invite-code').textContent).toBe('ABCDE-12345');
+    const link = screen.getByLabelText('招待リンク') as HTMLInputElement;
+    expect(link.value).toBe(`${window.location.origin}/hospital#invite=ABCDE12345`);
+    expect(new URL(link.value).search).toBe('');
+    expect(screen.getByText('病院役の参加を待っています...')).toBeTruthy();
+  });
+
+  it('病院役が画面を開いたら、応答待ちに変える', () => {
+    placeCall();
+    receive(callJoined('patient', { phase: 'ringing', invite: INVITE, peerConnected: false }));
+
+    receive({ type: 'peer_status', connected: true });
+
+    expect(screen.getByText('病院役の応答を待っています...')).toBeTruthy();
+  });
+
+  it('リンクをコピーできる', async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    placeCall();
+    receive(callJoined('patient', { phase: 'ringing', invite: INVITE }));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'リンクをコピー' }));
+    });
+
+    expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/hospital#invite=ABCDE12345`);
+    expect(screen.getByRole('button', { name: 'コピーしました' })).toBeTruthy();
+  });
+
+  it('コピーできなければ手でコピーするよう案内する', async () => {
+    const writeText = vi.fn(async () => {
+      throw new Error('denied');
+    });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    placeCall();
+    receive(callJoined('patient', { phase: 'ringing', invite: INVITE }));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'リンクをコピー' }));
+    });
+
+    expect(screen.getByRole('alert').textContent).toContain('コピーできませんでした');
+  });
+
+  it('発信を取り消すと通話を閉じ、席を忘れて最初の画面に戻る', () => {
+    placeCall();
+    receive(callJoined('patient', { phase: 'ringing', invite: INVITE }));
+
+    fireEvent.click(screen.getByRole('button', { name: '発信を取り消す' }));
+
+    expect(socket().sentOfType('reset_call')).toHaveLength(1);
+    expect(screen.getByPlaceholderText('例：内科の初診予約をしたいです')).toBeTruthy();
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it('混み合っていたら用件を残して最初の画面に戻す', () => {
+    placeCall();
+
+    receive({ type: 'call_error', code: 'server_busy' });
+
+    expect(screen.getByTestId('call-notice').textContent).toContain('混み合っている');
+    expect(
+      (screen.getByPlaceholderText('例：内科の初診予約をしたいです') as HTMLTextAreaElement).value,
+    ).toBe('内科の初診予約');
+  });
+
+  it('発信の返事の前に接続が切れたら、発信中のまま止まらない', () => {
+    placeCall();
+
+    act(() => socket().drop());
+
+    expect(screen.getByPlaceholderText('例：内科の初診予約をしたいです')).toBeTruthy();
+  });
+
+  it('時間内に応答がなければ理由を出して戻す', () => {
+    placeCall();
+    receive(callJoined('patient', { phase: 'ringing', invite: INVITE }));
+
+    receive({ type: 'call_closed', reason: 'invite_expired' });
+
+    expect(screen.getByTestId('call-notice').textContent).toContain('時間内に応答がなかった');
+    expect(window.sessionStorage.length).toBe(0);
+  });
+});
+
+describe('この通話のリセット', () => {
+  it('通話がないときはリセットを出さない', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+
+    expect(screen.queryByRole('button', { name: 'この通話をリセット' })).toBeNull();
+  });
+
+  it('リセットしたら席を忘れ、切断しても前の通話に戻らない', () => {
+    vi.useFakeTimers();
+    renderConnectedCall();
+
+    fireEvent.click(screen.getByRole('button', { name: 'この通話をリセット' }));
+    expect(socket().sentOfType('reset_call')).toHaveLength(1);
+
+    act(() => socket().drop());
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    act(() => socket().open());
+
+    expect(socket().sentOfType('join_call')).toEqual([]);
+  });
+
+  it('本人のリセットの完了通知では、入力中の用件を消さない', () => {
+    renderConnectedCall();
+    fireEvent.click(screen.getByRole('button', { name: 'この通話をリセット' }));
+    fireEvent.change(screen.getByPlaceholderText('例：内科の初診予約をしたいです'), {
+      target: { value: '次の用件' },
+    });
+
+    receive({ type: 'call_closed', reason: 'reset' });
+
+    expect(
+      (screen.getByPlaceholderText('例：内科の初診予約をしたいです') as HTMLTextAreaElement).value,
+    ).toBe('次の用件');
+    expect(screen.queryByTestId('call-notice')).toBeNull();
+  });
+});
+
+describe('再接続', () => {
+  const turns = [
+    { seq: 1, sender: '患者' as const, text: 'お電話しております。', origin: 'greeting' as const },
+    { seq: 2, sender: '病院受付' as const, text: '切断中に届いた質問です' },
+    { seq: 3, sender: '患者' as const, text: '本人が送った文', origin: 'typed' as const },
+  ];
+
+  it('再読み込みの後は保存した席のトークンで通話へ戻る', () => {
+    window.sessionStorage.setItem('echobridge.seat.patient', SEAT_TOKEN);
+    render(<PatientApp />);
+
+    act(() => socket().open());
+
+    expect(socket().sentOfType('join_call')).toEqual([{ type: 'join_call', seatToken: SEAT_TOKEN }]);
+  });
+
+  it('席のトークンがなければ参加を送らない', () => {
+    render(<PatientApp />);
+
+    act(() => socket().open());
+
+    expect(socket().sentOfType('join_call')).toEqual([]);
+  });
+
+  it('切断するとつなぎ直し、同じ席へ戻る', () => {
+    vi.useFakeTimers();
+    renderConnectedCall();
+
+    act(() => socket().drop());
+    expect(screen.getByTestId('call-notice').textContent).toContain('再接続しています');
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    act(() => socket().open());
+
+    expect(socket().sentOfType('join_call')).toEqual([{ type: 'join_call', seatToken: SEAT_TOKEN }]);
+  });
+
+  it('スナップショットで通話の記録を取り戻し、文は打ち直さず全文を出す', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+
+    receive(callJoined('patient', { turns }));
+
+    expect(screen.getByText('切断中に届いた質問です')).toBeTruthy();
+    expect(screen.getByText('本人が送った文')).toBeTruthy();
+  });
+
+  it('スナップショットで候補と生成中の状態を取り戻す', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+
+    receive(
+      callJoined('patient', {
+        turns,
+        suggestions: { suggestions: [{ text: 'はい、お願いします。', tag: '承諾' }], ai: GEMINI },
+      }),
+    );
+    expect(screen.getByRole('button', { name: /はい、お願いします。/ })).toBeTruthy();
+
+    receive(callJoined('patient', { turns, isGeneratingSuggestions: true }));
+    expect(screen.getByText('返答候補を準備中...')).toBeTruthy();
+  });
+
+  it('相手の発話中に切れても、再接続で入力を戻す', () => {
+    renderConnectedCall();
+    receive({ type: 'hospital_speaking_start' });
+    expect(input()).toHaveProperty('disabled', true);
+
+    receive(callJoined('patient', { turns, isHospitalSpeaking: false }));
+
+    expect(input()).toHaveProperty('disabled', false);
+  });
+
+  it('つなぎ直しても、席に戻るまでは通話のメッセージを送らない', () => {
+    vi.useFakeTimers();
+    renderConnectedCall();
+    act(() => socket().drop());
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    act(() => socket().open());
+
+    typeMessage('まだ送れない文');
+    fireEvent.click(screen.getByRole('button', { name: 'そのまま送る' }));
+
+    expect(confirmedSpeech()).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toContain('送信できませんでした');
+    expect(input().value).toBe('まだ送れない文');
+  });
+
+  it('通話が見つからなければ、席を忘れて理由を出す', () => {
+    window.sessionStorage.setItem('echobridge.seat.patient', SEAT_TOKEN);
+    render(<PatientApp />);
+    act(() => socket().open());
+
+    receive({ type: 'call_error', code: 'call_not_found' });
+
+    expect(screen.getByTestId('call-notice').textContent).toContain('通話が見つかりません');
+    expect(window.sessionStorage.getItem('echobridge.seat.patient')).toBeNull();
+  });
+
+  it('別の画面に席を取られたら、戻ろうとせず理由を出す', () => {
+    vi.useFakeTimers();
+    renderConnectedCall();
+
+    act(() => socket().drop(4001));
+    expect(screen.getByTestId('call-notice').textContent).toContain('別の画面で開かれた');
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    act(() => socket().open());
+
+    expect(socket().sentOfType('join_call')).toEqual([]);
+    expect(window.sessionStorage.getItem('echobridge.seat.patient')).toBeNull();
+  });
+
+  it('相手が切断したら、戻ると読み上げることを知らせる', () => {
+    renderConnectedCall();
+
+    receive({ type: 'peer_status', connected: false });
+    expect(screen.getByTestId('call-notice').textContent).toContain('相手の接続が切れています');
+
+    receive({ type: 'peer_status', connected: true });
+    expect(screen.queryByTestId('call-notice')).toBeNull();
+  });
+
+  it('保存期間が過ぎても、確認中の予定は画面に残す', () => {
+    renderConnectedCall();
+    receive({
+      type: 'end_call',
+      appointment: {
+        title: '内科',
+        date: '2026-11-12',
+        startTime: '14:30',
+        endTime: null,
+        location: 'ひまわり医院 (受付)',
+        details: '',
+      },
+      ai: GEMINI,
+    });
+
+    receive({ type: 'call_closed', reason: 'retention_expired' });
+
+    expect(screen.getByLabelText(/日付/)).toHaveProperty('value', '2026-11-12');
+    expect(screen.getByTestId('call-notice').textContent).toContain('通話記録を削除しました');
+  });
+
+  it('終わった通話の再接続で予定の確認に戻る', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+
+    receive(
+      callJoined('patient', {
+        phase: 'ended',
+        turns,
+        appointment: {
+          appointment: {
+            title: '内科',
+            date: '2026-11-12',
+            startTime: '14:30',
+            endTime: null,
+            location: 'ひまわり医院 (受付)',
+            details: '',
+          },
+          ai: GEMINI,
+        },
+      }),
+    );
+
+    expect(screen.getByLabelText(/日付/)).toHaveProperty('value', '2026-11-12');
   });
 });
