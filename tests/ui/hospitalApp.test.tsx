@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import HospitalApp from '@/app/hospital/page';
+import HospitalApp from '@/app/join/page';
 import type { ServerMessage, SpeechStatus } from '@/lib/callProtocol';
 import { SEAT_TOKEN, callJoined } from '../helpers/callMessages';
 import { FakeWebSocket } from '../helpers/fakeWebSocket';

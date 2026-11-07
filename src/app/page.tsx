@@ -135,6 +135,7 @@ const ORIGIN_LABELS: Record<MessageOrigin, string> = {
   ai_edited: 'AI案を編集',
   suggestion: 'AI候補から選択',
   fallback_suggestion: '定型文から選択',
+  quick_phrase: '即答フレーズ',
 };
 
 function speakerLabel(message: ChatMessage): string {

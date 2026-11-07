@@ -61,6 +61,8 @@ export interface RawAppointment {
   date: string | null;
   startTime: string | null;
   endTime: string | null;
+  /** 古い応答や、場所を返さない呼び出しでは undefined。 */
+  location?: string | null;
   details: string | null;
 }
 
@@ -84,9 +86,17 @@ export function sanitizeAppointment(
     date,
     startTime,
     endTime,
-    location: defaults.location,
+    location: raw.location?.trim() || defaults.location,
     details: raw.details?.trim() ?? '',
   };
+}
+
+/**
+ * 通話から予定が読み取れたか。日付も時刻もなければ、予定の話はなかったものとして扱う。
+ * 予定がない通話で、予約が済んだような画面を出さないために使う。
+ */
+export function hasScheduleHint(draft: AppointmentDraft): boolean {
+  return draft.date !== null || draft.startTime !== null;
 }
 
 export interface ConfirmedAppointment extends AppointmentDraft {

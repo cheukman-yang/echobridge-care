@@ -19,9 +19,20 @@ import type {
   ServerMessage,
   SpeechOrigin,
   SpeechStatus,
+  PlaybackStatus,
   SuggestionSet,
 } from '../src/lib/callProtocol';
+import { DEFAULT_CALL_PURPOSE } from '../src/lib/callPurpose';
+import type { CallPurpose } from '../src/lib/callPurpose';
 import type { AiAssistant } from './geminiService';
+
+/** 発信のときに本人が決める、通話の前提。 */
+export interface CallContext {
+  purpose: CallPurpose;
+  partnerName: string;
+}
+
+export const DEFAULT_CALL_CONTEXT: CallContext = { purpose: DEFAULT_CALL_PURPOSE, partnerName: '' };
 
 interface SpeechResult {
   results: { alternatives: { transcript: string }[]; isFinal?: boolean }[];
@@ -217,6 +228,8 @@ export class CallRoom {
   private readonly timers = new Map<TimerName, NodeJS.Timeout>();
   private invite: CallInvite | null;
   private intent: string;
+  private readonly purpose: CallPurpose;
+  private partnerName: string;
   private turns: CallTurn[] = [];
   private nextSeq = 1;
   private speechCapture: SpeechCapture | null = null;
@@ -235,9 +248,12 @@ export class CallRoom {
     private readonly deps: CallRoomDeps,
     intent: string,
     private readonly onClosed: (room: CallRoom) => void,
+    context: CallContext = DEFAULT_CALL_CONTEXT,
   ) {
     const { inviteTtlMs, maxCallDurationMs } = deps.limits;
     this.intent = intent;
+    this.purpose = context.purpose;
+    this.partnerName = context.partnerName;
     this.invite = { code: generateInviteCode(), expiresAt: Date.now() + inviteTtlMs };
     this.setTimer('invite', inviteTtlMs, () => this.close('invite_expired'));
     this.setTimer('lifetime', maxCallDurationMs, () => this.close('time_limit'));
@@ -305,7 +321,7 @@ export class CallRoom {
     this.phase = 'connected';
     this.invite = null;
     this.clearTimer('invite');
-    const text = buildGreeting(this.intent);
+    const text = buildGreeting(this.intent, this.purpose);
     const seq = this.addTurn({ sender: '患者', text, origin: 'greeting' });
     this.broadcast({ type: 'answer_call', text, seq });
     // 応答の前に患者が切断していても、通話が始まったので片付けの対象ではなくなる。
@@ -374,7 +390,7 @@ export class CallRoom {
     this.sendTo('patient', { type: 'generating_suggestions' });
 
     const result = await this.deps.ai.suggestReplies({
-      intent: this.intent,
+      ...this.aiContext(),
       history: this.conversation(),
       latestUtterance: utterance,
     });
@@ -394,6 +410,19 @@ export class CallRoom {
     this.broadcast({ type: 'patient_speech', text, origin, seq });
   }
 
+  /**
+   * 相手の端末が読み上げた結果を本人に知らせる。本人の発言でない番号は無視する。
+   * 読み終えた後に始まりの報告が遅れて届いても、終わった状態を戻さない。
+   */
+  reportPlayback(seq: number, status: PlaybackStatus): void {
+    const turn = this.turns.find((candidate) => candidate.seq === seq);
+    if (!turn || turn.sender !== '患者') return;
+    if (status === 'started' && turn.playback !== undefined) return;
+    turn.playback = status;
+    this.sendTo('patient', { type: 'speech_playback', seq, status });
+    if (status === 'failed') logEvent('WARNING', 'playback_failed', { callId: this.id });
+  }
+
   async polish(requestId: string, text: string): Promise<void> {
     if (this.polishRequests >= this.deps.limits.maxPolishRequestsPerCall) {
       this.sendPolishFailure(requestId, 'rate_limited');
@@ -402,8 +431,8 @@ export class CallRoom {
     this.polishRequests += 1;
 
     const result = await this.deps.ai.polishText({
+      ...this.aiContext(),
       text,
-      intent: this.intent,
       history: this.conversation(),
     });
 
@@ -447,7 +476,7 @@ export class CallRoom {
     this.broadcast({ type: 'call_ending' });
 
     const result = await this.deps.ai.extractAppointment({
-      intent: this.intent,
+      ...this.aiContext(),
       history: this.conversation(),
     });
 
@@ -484,6 +513,7 @@ export class CallRoom {
 
     this.invite = null;
     this.intent = '';
+    this.partnerName = '';
     this.turns = [];
     this.speechCapture = null;
     this.suggestions = null;
@@ -496,7 +526,9 @@ export class CallRoom {
     const forPatient = role === 'patient';
     return {
       phase: this.phase,
-      turns: [...this.turns],
+      purpose: this.purpose,
+      partnerName: this.partnerName,
+      turns: this.turns.map((turn) => ({ ...turn })),
       peerConnected: this.seats[otherRole(role)].peer !== null,
       isHospitalSpeaking: this.isHospitalRecording,
       isPatientSpeaking: this.isPatientSpeaking,
@@ -520,6 +552,10 @@ export class CallRoom {
     this.nextSeq += 1;
     this.turns.push({ ...turn, seq });
     return seq;
+  }
+
+  private aiContext() {
+    return { intent: this.intent, purpose: this.purpose, partnerName: this.partnerName };
   }
 
   /** AIには発言者と本文だけを渡す。 */
@@ -653,9 +689,9 @@ export class CallRegistry {
   }
 
   /** 通話を作る。上限に達していれば null を返す。 */
-  create(intent: string): CallRoom | null {
+  create(intent: string, context: CallContext = DEFAULT_CALL_CONTEXT): CallRoom | null {
     if (this.rooms.size >= this.deps.limits.maxActiveCalls) return null;
-    const room = new CallRoom(this.deps, intent, (closed) => this.rooms.delete(closed));
+    const room = new CallRoom(this.deps, intent, (closed) => this.rooms.delete(closed), context);
     this.rooms.add(room);
     return room;
   }

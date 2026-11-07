@@ -8,9 +8,16 @@ import {
   CLOSE_CODE_IDLE,
   CLOSE_CODE_SEAT_TAKEN,
   MAX_PATIENT_TEXT_LENGTH,
+  PLAYBACK_STATUSES,
   SPEECH_ORIGINS,
   normalizeInviteCode,
 } from '../src/lib/callProtocol';
+import {
+  CALL_PURPOSES,
+  DEFAULT_CALL_PURPOSE,
+  MAX_PARTNER_NAME_LENGTH,
+  normalizePartnerName,
+} from '../src/lib/callPurpose';
 import type {
   CallErrorCode,
   CallPhase,
@@ -31,6 +38,14 @@ const MessageEnvelopeSchema = z.looseObject({ type: z.string() });
 
 const StartCallSchema = z.object({
   intent: z.string().trim().min(1).max(MAX_PATIENT_TEXT_LENGTH),
+  purpose: z.enum(CALL_PURPOSES).default(DEFAULT_CALL_PURPOSE),
+  // 長すぎる名前は切り詰めず断る。画面の入力欄にも同じ上限がある。
+  partnerName: z.string().max(MAX_PARTNER_NAME_LENGTH).transform(normalizePartnerName).default(''),
+});
+
+const SpeechPlaybackSchema = z.object({
+  seq: z.number().int().positive(),
+  status: z.enum(PLAYBACK_STATUSES),
 });
 
 const JoinCallSchema = z.union([
@@ -67,6 +82,8 @@ const MESSAGE_RULES: Record<
   hospital_speaking_start: { roles: ['hospital'], phases: ['connected'] },
   hospital_speaking_stop: { roles: ['hospital'], phases: ['connected'] },
   hospital_speech_end: { roles: ['hospital'], phases: ['connected'] },
+  // 終了の直前に読み始めた文の結果も、本人の終了画面に反映する。
+  speech_playback: { roles: ['hospital'], phases: ['connected', 'ending', 'ended'] },
   patient_typing_notice: { roles: ['patient'], phases: ['connected'] },
   patient_polish_request: { roles: ['patient'], phases: ['connected'] },
   patient_confirmed_speech: { roles: ['patient'], phases: ['connected'] },
@@ -254,7 +271,8 @@ export function attachCallServer(
         reject('invalid_message');
         return;
       }
-      const room = calls.create(parsed.data.intent);
+      const { intent, purpose, partnerName } = parsed.data;
+      const room = calls.create(intent, { purpose, partnerName });
       if (!room) {
         logEvent('WARNING', 'call_capacity_reached', { activeCalls: calls.activeCalls });
         reject('server_busy');
@@ -327,6 +345,12 @@ export function attachCallServer(
         case 'hospital_speech_end':
           await room.finishHospitalSpeech();
           break;
+        case 'speech_playback': {
+          const parsed = SpeechPlaybackSchema.safeParse(data);
+          if (parsed.success) room.reportPlayback(parsed.data.seq, parsed.data.status);
+          else reject('invalid_message');
+          break;
+        }
         case 'patient_typing_notice':
           room.notifyTyping();
           break;

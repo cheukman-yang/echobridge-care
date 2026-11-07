@@ -95,6 +95,73 @@ describe('buildFallbackSuggestions', () => {
 
     expect(texts.join('')).not.toContain('保険証を');
   });
+
+  it('日常の連絡では医療向けの定型文を使わない', () => {
+    const texts = buildFallbackSuggestions('初診でしょうか。マイナンバーカードは', 'general')
+      .map(({ text }) => text)
+      .join('');
+
+    expect(texts).not.toMatch(/初診|マイナンバー|資格確認書|持参/);
+    expect(texts).toContain('お待ちください');
+  });
+});
+
+describe('通話の目的とAIへの渡し方', () => {
+  const generalInput = {
+    intent: '土曜の待ち合わせ',
+    purpose: 'general' as const,
+    partnerName: '佐藤さん',
+    history,
+    latestUtterance: '何時にしますか',
+  };
+
+  it('発言者を「本人」「相手」で渡し、病院の役割名を使わない', async () => {
+    const models = createFakeModels(() => jsonReply(threeSuggestions));
+
+    await createAiAssistant(createFakeRunner(models)).suggestReplies(generalInput);
+
+    const params = models.generateContent.mock.calls[0][0];
+    const contents = sentContents(params);
+    expect(contents).toContain('"話者":"本人"');
+    expect(contents).toContain('"話者":"相手"');
+    expect(contents).not.toMatch(/患者|病院受付/);
+    expect(contents).toContain('佐藤さん');
+    expect(String(params.config?.systemInstruction)).not.toContain('病院');
+  });
+
+  it('医療機関への連絡だけ、保険と医療の規則を足す', async () => {
+    const models = createFakeModels(() => jsonReply(threeSuggestions));
+    const assistant = createAiAssistant(createFakeRunner(models));
+
+    await assistant.suggestReplies({ ...generalInput, purpose: 'medical' });
+    await assistant.suggestReplies(generalInput);
+
+    const [medical, general] = models.generateContent.mock.calls.map(([params]) =>
+      String(params.config?.systemInstruction),
+    );
+    expect(medical).toContain('マイナンバーカード');
+    expect(medical).toContain('医療上の判断');
+    expect(general).not.toContain('マイナンバーカード');
+  });
+
+  it('日常の連絡でAIが失敗したら、一般向けの定型文を返す', async () => {
+    const assistant = createAiAssistant(createFakeRunner(createFakeModels(FAILING)));
+
+    const result = await assistant.suggestReplies({ ...generalInput, latestUtterance: '初診ですか' });
+
+    expect(result.ai.source).toBe('fallback');
+    expect(result.suggestions.map(({ text }) => text).join('')).not.toContain('初診');
+  });
+
+  it('整形の指示から病院の受付を外し、目的を伝える', async () => {
+    const models = createFakeModels(() => jsonReply({ polished: '土曜でお願いします。' }));
+
+    await createAiAssistant(createFakeRunner(models)).polishText({ ...generalInput, text: '土曜' });
+
+    const instruction = String(models.generateContent.mock.calls[0][0].config?.systemInstruction);
+    expect(instruction).not.toContain('病院');
+    expect(instruction).toContain('日常の連絡');
+  });
 });
 
 describe('polishText', () => {
@@ -231,7 +298,10 @@ describe('extractAppointment', () => {
   it('AIが失敗しても会話から日時を推測しない', async () => {
     const assistant = createAiAssistant(createFakeRunner(createFakeModels(FAILING)), () => NOW);
 
-    const { appointment, ai } = await assistant.extractAppointment(input);
+    const { appointment, ai } = await assistant.extractAppointment({
+      ...input,
+      partnerName: 'ひまわり医院',
+    });
 
     expect(ai).toEqual({ source: 'fallback', reason: 'unavailable' });
     expect(appointment).toEqual({
@@ -239,8 +309,40 @@ describe('extractAppointment', () => {
       date: null,
       startTime: null,
       endTime: null,
-      location: 'ひまわり医院 (受付)',
+      location: 'ひまわり医院',
       details: '',
     });
+  });
+
+  it('場所は会話で決まった場所を優先し、なければ医療機関の名前にする', async () => {
+    const reply = (location: string | null) =>
+      createAiAssistant(
+        createFakeRunner(
+          createFakeModels(() =>
+            jsonReply({ title: null, date: null, startTime: null, endTime: null, location, details: null }),
+          ),
+        ),
+        () => NOW,
+      );
+
+    const spoken = await reply('2階の内科受付').extractAppointment({ ...input, partnerName: 'ひまわり医院' });
+    const unspoken = await reply(null).extractAppointment({ ...input, partnerName: 'ひまわり医院' });
+
+    expect(spoken.appointment.location).toBe('2階の内科受付');
+    expect(unspoken.appointment.location).toBe('ひまわり医院');
+  });
+
+  it('日常の連絡では、相手の名前を場所にしない', async () => {
+    const assistant = createAiAssistant(createFakeRunner(createFakeModels(FAILING)), () => NOW);
+
+    const { appointment } = await assistant.extractAppointment({
+      intent: '',
+      purpose: 'general',
+      partnerName: '母',
+      history,
+    });
+
+    expect(appointment.location).toBe('');
+    expect(appointment.title).toBe('予定');
   });
 });

@@ -6,6 +6,8 @@ export const SEAT_TOKEN = 'test-seat-token';
 export function makeSnapshot(overrides: Partial<CallSnapshot> = {}): CallSnapshot {
   return {
     phase: 'connected',
+    purpose: 'medical',
+    partnerName: '',
     turns: [],
     peerConnected: true,
     isHospitalSpeaking: false,

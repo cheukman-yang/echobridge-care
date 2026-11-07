@@ -6,6 +6,7 @@ import {
   normalizeInviteCode,
   parseInviteFromHash,
 } from '@/lib/callProtocol';
+import { MAX_PARTNER_NAME_LENGTH, normalizePartnerName } from '@/lib/callPurpose';
 
 describe('招待コード', () => {
   it.each([
@@ -26,7 +27,7 @@ describe('招待コード', () => {
   it('リンクのコードをフラグメントに入れ、取り出せる', () => {
     const url = new URL(buildInviteUrl('https://echo.example', 'ABCDE12345'));
 
-    expect(url.pathname).toBe('/hospital');
+    expect(url.pathname).toBe('/join');
     expect(url.search).toBe('');
     expect(parseInviteFromHash(url.hash)).toBe('ABCDE12345');
   });
@@ -53,5 +54,28 @@ describe('buildGreeting', () => {
 
   it('前後の空白だけを取り除く', () => {
     expect(buildGreeting('  再診の予約です \n')).toMatch(/再診の予約です。$/);
+  });
+
+  it('目的ごとに前置きを変え、本人の文はどちらも変えない', () => {
+    const medical = buildGreeting('土曜に会えますか', 'medical');
+    const general = buildGreeting('土曜に会えますか', 'general');
+
+    expect(medical).toMatch(/^お忙しいところ恐れ入ります。/);
+    expect(general).not.toContain('お電話しております');
+    expect(general).toContain('AI音声アシスタント');
+    expect(medical).toMatch(/土曜に会えますか。$/);
+    expect(general).toMatch(/土曜に会えますか。$/);
+  });
+});
+
+describe('normalizePartnerName', () => {
+  it('改行や制御文字を空白にして1行にする', () => {
+    expect(normalizePartnerName('  ひまわり\n医院\t受付 ')).toBe('ひまわり 医院 受付');
+  });
+
+  it('上限より長い名前を切り詰める', () => {
+    expect(normalizePartnerName('あ'.repeat(MAX_PARTNER_NAME_LENGTH + 5))).toHaveLength(
+      MAX_PARTNER_NAME_LENGTH,
+    );
   });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCalendarUrl,
   formatTokyoNow,
+  hasScheduleHint,
   isReadyForCalendar,
   sanitizeAppointment,
   tokyoToday,
@@ -115,5 +116,28 @@ describe('Googleカレンダーへの受け渡し', () => {
     expect(paramsFor({ ...draft, startTime: '23:30' }).get('dates')).toBe(
       '20261112T233000/20261112T235900',
     );
+  });
+});
+
+describe('場所と予定の有無', () => {
+  it('会話で決まった場所があれば既定の場所より優先する', () => {
+    expect(sanitizeAppointment({ ...raw, location: ' 2階の受付 ' }, DEFAULTS, TODAY).location).toBe(
+      '2階の受付',
+    );
+    expect(sanitizeAppointment({ ...raw, location: null }, DEFAULTS, TODAY).location).toBe(
+      DEFAULTS.location,
+    );
+  });
+
+  it('日付も時刻もなければ、予定の話はなかったと判断する', () => {
+    const empty = sanitizeAppointment(
+      { title: null, date: null, startTime: null, endTime: null, details: null },
+      DEFAULTS,
+      TODAY,
+    );
+
+    expect(hasScheduleHint(empty)).toBe(false);
+    expect(hasScheduleHint({ ...empty, date: '2026-11-12' })).toBe(true);
+    expect(hasScheduleHint({ ...empty, startTime: '10:00' })).toBe(true);
   });
 });

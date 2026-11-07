@@ -579,7 +579,7 @@ describe('発信と招待', () => {
 
     expect(screen.getByTestId('invite-code').textContent).toBe('ABCDE-12345');
     const link = screen.getByLabelText('招待リンク') as HTMLInputElement;
-    expect(link.value).toBe(`${window.location.origin}/hospital#invite=ABCDE12345`);
+    expect(link.value).toBe(`${window.location.origin}/join#invite=ABCDE12345`);
     expect(new URL(link.value).search).toBe('');
     expect(screen.getByText('病院役の参加を待っています...')).toBeTruthy();
   });
@@ -603,7 +603,7 @@ describe('発信と招待', () => {
       fireEvent.click(screen.getByRole('button', { name: 'リンクをコピー' }));
     });
 
-    expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/hospital#invite=ABCDE12345`);
+    expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/join#invite=ABCDE12345`);
     expect(screen.getByRole('button', { name: 'コピーしました' })).toBeTruthy();
   });
 

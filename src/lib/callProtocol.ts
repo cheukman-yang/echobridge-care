@@ -1,10 +1,9 @@
 import type { AiMeta, AiStatus } from './aiMeta';
+import { CALL_PURPOSE_PROFILES, DEFAULT_CALL_PURPOSE } from './callPurpose';
+import type { CallPurpose } from './callPurpose';
 
 /** 患者が入力・確定できる文の上限。Geminiへの入力量の上限も兼ねる。 */
 export const MAX_PATIENT_TEXT_LENGTH = 300;
-
-/** デモの架電先。AIの推測ではなく、シナリオで決まっている値。 */
-export const DEMO_CLINIC_LOCATION = 'ひまわり医院 (受付)';
 
 export const TYPING_NOTICE_TEXT = '通話内容入力中のためお待ちください';
 
@@ -27,18 +26,17 @@ export const INVITE_CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 /** 1文字5ビットなので50ビット。手で打てる長さで、総当たりは現実的でない。 */
 export const INVITE_CODE_LENGTH = 10;
 
-const GREETING_PREFIX = 'お忙しいところ恐れ入ります。AI音声アシスタントを介してお電話しております。';
-
 /**
  * 相手に最初に読み上げる文を作る。
  * 発信前のプレビューとサーバーの読み上げが同じ関数を使うので、本人が見た文と読まれる文は一致する。
  * 本人の文に活用や語尾を足すと意味が崩れるので、文末の句点以外は変更しない。
  */
-export function buildGreeting(intent: string): string {
+export function buildGreeting(intent: string, purpose: CallPurpose = DEFAULT_CALL_PURPOSE): string {
+  const prefix = CALL_PURPOSE_PROFILES[purpose].greetingPrefix;
   const body = intent.trim();
-  if (!body) return GREETING_PREFIX;
+  if (!body) return prefix;
   const hasSentenceEnd = /[。．.！!？?]$/.test(body);
-  return `${GREETING_PREFIX}${body}${hasSentenceEnd ? '' : '。'}`;
+  return `${prefix}${body}${hasSentenceEnd ? '' : '。'}`;
 }
 
 /** 手入力の揺れをなくす。全角や区切りを取り除き、紛らわしい文字を読み替える。 */
@@ -57,12 +55,15 @@ export function formatInviteCode(code: string): string {
   return `${code.slice(0, middle)}-${code.slice(middle)}`;
 }
 
+/** 相手が参加する画面のパス。以前の `/hospital` は next.config の転送でここへ来る。 */
+export const JOIN_PATH = '/join';
+
 /**
- * 病院役に渡す招待リンクを作る。
+ * 相手に渡す招待リンクを作る。
  * URLのフラグメントはサーバーへ送られないので、コードがアクセスログやRefererに残らない。
  */
 export function buildInviteUrl(origin: string, code: string): string {
-  return `${origin}/hospital#invite=${code}`;
+  return `${origin}${JOIN_PATH}#invite=${code}`;
 }
 
 /** URLのフラグメントから招待コードを取り出す。 */
@@ -88,9 +89,18 @@ export const SPEECH_ORIGINS = [
   'ai_edited',
   'suggestion',
   'fallback_suggestion',
+  'quick_phrase',
 ] as const;
 
 export type SpeechOrigin = (typeof SPEECH_ORIGINS)[number];
+
+/**
+ * 相手の端末での読み上げの状態。相手の画面が報告する。
+ * 届いたことと、相手が聞けたことは別なので、本人の画面で区別して見せる。
+ */
+export const PLAYBACK_STATUSES = ['started', 'ended', 'failed'] as const;
+
+export type PlaybackStatus = (typeof PLAYBACK_STATUSES)[number];
 
 /** 通話内容から読み取った予定の下書き。分からない項目は推測せず null のまま本人に見せる。 */
 export interface AppointmentDraft {
@@ -116,6 +126,8 @@ export type CallPhase = 'ringing' | 'connected' | 'ending' | 'ended';
 export interface CallTurn extends ChatTurn {
   seq: number;
   origin?: SpeechOrigin | 'greeting';
+  /** 本人の発言だけにある。相手の端末から報告がまだなければ undefined。 */
+  playback?: PlaybackStatus;
 }
 
 export interface CallInvite {
@@ -141,6 +153,9 @@ export interface AppointmentResult {
  */
 export interface CallSnapshot {
   phase: CallPhase;
+  purpose: CallPurpose;
+  /** 本人が入力した相手の名前。なければ空文字。 */
+  partnerName: string;
   turns: CallTurn[];
   peerConnected: boolean;
   isHospitalSpeaking: boolean;
@@ -203,6 +218,7 @@ export type ServerMessage =
       ai: AiMeta;
     }
   | { type: 'patient_speech'; text: string; origin: SpeechOrigin; seq: number }
+  | { type: 'speech_playback'; seq: number; status: PlaybackStatus }
   | { type: 'patient_typing_notice'; text: string }
   | { type: 'patient_speaking_status'; isSpeaking: boolean }
   | { type: 'call_ending' }
@@ -210,13 +226,14 @@ export type ServerMessage =
 
 /** ブラウザからサーバーへ送るメッセージ。席のない接続が送れるのは start_call と join_call だけ。 */
 export type ClientMessage =
-  | { type: 'start_call'; intent: string }
+  | { type: 'start_call'; intent: string; purpose?: CallPurpose; partnerName?: string }
   | { type: 'join_call'; inviteCode: string }
   | { type: 'join_call'; seatToken: string }
   | { type: 'answer_call' }
   | { type: 'hospital_speaking_start' }
   | { type: 'hospital_speaking_stop' }
   | { type: 'hospital_speech_end' }
+  | { type: 'speech_playback'; seq: number; status: PlaybackStatus }
   | { type: 'patient_typing_notice' }
   | { type: 'patient_polish_request'; requestId: string; text: string }
   | { type: 'patient_confirmed_speech'; text: string; origin: SpeechOrigin }

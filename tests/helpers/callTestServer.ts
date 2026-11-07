@@ -11,12 +11,15 @@ import type {
 } from '../../server/callServer';
 import type { GeminiModels } from '../../server/geminiClient';
 import { createAiAssistant } from '../../server/geminiService';
-import type { ServerMessage, SpeechStatus } from '@/lib/callProtocol';
+import type { ClientMessage, ServerMessage, SpeechStatus } from '@/lib/callProtocol';
 import { createFakeRunner } from './fakeGemini';
 
 export const DEFAULT_INTENT = '内科の予約';
 
 type MessageType = ServerMessage['type'];
+
+/** 発信のときに足せる項目。省くとサーバーの既定値になる。 */
+export type CallSetup = Omit<Extract<ClientMessage, { type: 'start_call' }>, 'type' | 'intent'>;
 type MessageOf<T extends MessageType> = Extract<ServerMessage, { type: T }>;
 
 /** 本物のWebSocketで通話サーバーへつなぐクライアント。受信を記録する。 */
@@ -188,17 +191,17 @@ export class CallTestServer {
     return client;
   }
 
-  /** 患者が発信し、招待を受け取るところまで進める。 */
-  async placeCall(intent = DEFAULT_INTENT) {
+  /** 患者が発信し、招待を受け取るところまで進める。setup で目的と相手の名前を足せる。 */
+  async placeCall(intent = DEFAULT_INTENT, setup: CallSetup = {}) {
     const patient = await this.connect();
-    patient.send({ type: 'start_call', intent });
+    patient.send({ type: 'start_call', intent, ...setup });
     const joined = await patient.waitFor('call_joined');
     return { patient, joined, inviteCode: joined.snapshot.invite!.code };
   }
 
   /** 発信から病院の応答まで進める。 */
-  async openCall(intent = DEFAULT_INTENT): Promise<OpenCall> {
-    const { patient, inviteCode } = await this.placeCall(intent);
+  async openCall(intent = DEFAULT_INTENT, setup: CallSetup = {}): Promise<OpenCall> {
+    const { patient, inviteCode } = await this.placeCall(intent, setup);
     const hospital = await this.connect();
     hospital.send({ type: 'join_call', inviteCode });
     await hospital.waitFor('call_joined');
