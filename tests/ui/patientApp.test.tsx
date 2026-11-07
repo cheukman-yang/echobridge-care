@@ -27,6 +27,7 @@ function renderConnectedCall() {
 }
 
 const confirmedSpeech = () => socket().sentOfType('patient_confirmed_speech');
+const sendTypedButton = () => screen.getByRole('button', { name: 'そのまま送る' });
 const input = () => screen.getByRole('textbox', { name: '相手に伝える文' }) as HTMLInputElement;
 
 function typeMessage(text: string) {
@@ -445,13 +446,13 @@ describe('通話の接続', () => {
     });
 
     receive({ type: 'patient_speech', text: '待たせました', origin: 'typed', seq: 3 });
-    expect(screen.queryByText('あなた・入力した文')).toBeNull();
+    expect(screen.queryByText('待たせました')).toBeNull();
 
     act(() => {
       vi.advanceTimersByTime(230 * 30);
     });
 
-    expect(screen.getByText('あなた・入力した文')).toBeTruthy();
+    expect(screen.getByText('待たせました')).toBeTruthy();
   });
 });
 
@@ -567,7 +568,9 @@ describe('発信と招待', () => {
   it('発信すると用件を送り、席が決まるまで招待を出さない', () => {
     placeCall();
 
-    expect(socket().sentOfType('start_call')).toEqual([{ type: 'start_call', intent: '内科の初診予約' }]);
+    expect(socket().sentOfType('start_call')).toEqual([
+      { type: 'start_call', intent: '内科の初診予約', purpose: 'medical', partnerName: '' },
+    ]);
     expect(screen.getByText('通話を準備しています...')).toBeTruthy();
     expect(screen.queryByTestId('invite-code')).toBeNull();
   });
@@ -581,7 +584,7 @@ describe('発信と招待', () => {
     const link = screen.getByLabelText('招待リンク') as HTMLInputElement;
     expect(link.value).toBe(`${window.location.origin}/join#invite=ABCDE12345`);
     expect(new URL(link.value).search).toBe('');
-    expect(screen.getByText('病院役の参加を待っています...')).toBeTruthy();
+    expect(screen.getByText('相手の参加を待っています')).toBeTruthy();
   });
 
   it('病院役が画面を開いたら、応答待ちに変える', () => {
@@ -590,7 +593,7 @@ describe('発信と招待', () => {
 
     receive({ type: 'peer_status', connected: true });
 
-    expect(screen.getByText('病院役の応答を待っています...')).toBeTruthy();
+    expect(screen.getByText('相手が応答するのを待っています')).toBeTruthy();
   });
 
   it('リンクをコピーできる', async () => {
@@ -664,6 +667,31 @@ describe('発信と招待', () => {
 });
 
 describe('この通話のリセット', () => {
+  it('通話中は確かめてからリセットし、やめれば通話を続ける', () => {
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirm);
+    renderConnectedCall();
+
+    fireEvent.click(screen.getByRole('button', { name: 'この通話をリセット' }));
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(socket().sentOfType('reset_call')).toEqual([]);
+    expect(input()).toBeTruthy();
+  });
+
+  it('発信中のリセットは確かめずに取り消す', () => {
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirm);
+    render(<PatientApp />);
+    act(() => socket().open());
+    receive(callJoined('patient', { phase: 'ringing', invite: INVITE, peerConnected: false }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'この通話をリセット' }));
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(socket().sentOfType('reset_call')).toHaveLength(1);
+  });
+
   it('通話がないときはリセットを出さない', () => {
     render(<PatientApp />);
     act(() => socket().open());
@@ -673,6 +701,7 @@ describe('この通話のリセット', () => {
 
   it('リセットしたら席を忘れ、切断しても前の通話に戻らない', () => {
     vi.useFakeTimers();
+    vi.stubGlobal('confirm', vi.fn(() => true));
     renderConnectedCall();
 
     fireEvent.click(screen.getByRole('button', { name: 'この通話をリセット' }));
@@ -688,6 +717,7 @@ describe('この通話のリセット', () => {
   });
 
   it('本人のリセットの完了通知では、入力中の用件を消さない', () => {
+    vi.stubGlobal('confirm', vi.fn(() => true));
     renderConnectedCall();
     fireEvent.click(screen.getByRole('button', { name: 'この通話をリセット' }));
     fireEvent.change(screen.getByPlaceholderText('例：内科の初診予約をしたいです'), {
@@ -747,8 +777,9 @@ describe('再接続', () => {
 
     receive(callJoined('patient', { turns }));
 
-    expect(screen.getByText('切断中に届いた質問です')).toBeTruthy();
-    expect(screen.getByText('本人が送った文')).toBeTruthy();
+    const log = within(screen.getByRole('log'));
+    expect(log.getByText('切断中に届いた質問です')).toBeTruthy();
+    expect(log.getByText('本人が送った文')).toBeTruthy();
   });
 
   it('スナップショットで候補と生成中の状態を取り戻す', () => {
@@ -767,14 +798,16 @@ describe('再接続', () => {
     expect(screen.getByText('返答候補を準備中...')).toBeTruthy();
   });
 
-  it('相手の発話中に切れても、再接続で入力を戻す', () => {
+  it('相手の発話中に切れても、再接続で送信できる状態に戻す', () => {
     renderConnectedCall();
+    typeMessage('準備した返事');
     receive({ type: 'hospital_speaking_start' });
-    expect(input()).toHaveProperty('disabled', true);
+    expect(sendTypedButton()).toHaveProperty('disabled', true);
 
     receive(callJoined('patient', { turns, isHospitalSpeaking: false }));
 
-    expect(input()).toHaveProperty('disabled', false);
+    expect(sendTypedButton()).toHaveProperty('disabled', false);
+    expect(input().value).toBe('準備した返事');
   });
 
   it('つなぎ直しても、席に戻るまでは通話のメッセージを送らない', () => {
@@ -874,5 +907,139 @@ describe('再接続', () => {
     );
 
     expect(screen.getByLabelText(/日付/)).toHaveProperty('value', '2026-11-12');
+  });
+});
+
+describe('通話の目的と相手の名前', () => {
+  const intentField = () => screen.getByLabelText('最初に伝える用件');
+
+  it('選んだ目的と相手の名前を発信に含め、あいさつのプレビューも目的に合わせる', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+
+    fireEvent.click(screen.getByRole('radio', { name: /日常の連絡/ }));
+    fireEvent.change(screen.getByLabelText(/相手の名前/), { target: { value: '佐藤さん' } });
+    fireEvent.change(intentField(), { target: { value: '土曜の待ち合わせ' } });
+
+    expect(screen.getByTestId('greeting-preview').textContent).toBe(
+      buildGreeting('土曜の待ち合わせ', 'general'),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /発信する/ }));
+
+    expect(socket().sentOfType('start_call')).toEqual([
+      { type: 'start_call', intent: '土曜の待ち合わせ', purpose: 'general', partnerName: '佐藤さん' },
+    ]);
+  });
+
+  it('相手の名前を、会話の記録の発言者として表示する', () => {
+    renderConnectedCall();
+    receive(callJoined('patient', { partnerName: 'ひまわり医院', turns: [] }));
+    receive({ type: 'transcript_final', text: 'ご用件をどうぞ', seq: 2 });
+
+    const log = within(screen.getByRole('log'));
+    expect(log.getByText('ひまわり医院')).toBeTruthy();
+    expect(log.getByText('ご用件をどうぞ')).toBeTruthy();
+  });
+});
+
+describe('即答フレーズ', () => {
+  it('押すとボタンの文をそのまま、即答の経路で送る', () => {
+    renderConnectedCall();
+
+    fireEvent.click(screen.getByRole('button', { name: '少々お待ちください。' }));
+
+    expect(confirmedSpeech()).toEqual([
+      { type: 'patient_confirmed_speech', text: '少々お待ちください。', origin: 'quick_phrase' },
+    ]);
+  });
+
+  it('相手の発話中は送れない', () => {
+    renderConnectedCall();
+    receive({ type: 'hospital_speaking_start' });
+
+    const button = screen.getByRole('button', { name: 'はい。' });
+    fireEvent.click(button);
+
+    expect(button).toHaveProperty('disabled', true);
+    expect(confirmedSpeech()).toEqual([]);
+  });
+
+  it('相手の発話中も入力とAIの整形はでき、送信だけを待つ', () => {
+    renderConnectedCall();
+    receive({ type: 'hospital_speaking_start' });
+
+    typeMessage('あした行けます');
+    expect(input()).toHaveProperty('disabled', false);
+    expect(sendTypedButton()).toHaveProperty('disabled', true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'AIで整える' }));
+
+    expect(socket().sentOfType('patient_polish_request')).toHaveLength(1);
+    expect(confirmedSpeech()).toEqual([]);
+  });
+});
+
+describe('相手の端末での読み上げの状態', () => {
+  function sentLine() {
+    renderConnectedCall();
+    receive({ type: 'patient_speech', text: '本人の文です', origin: 'typed', seq: 2 });
+    return within(screen.getByRole('log'));
+  }
+
+  it('送った直後は送信済み、相手の報告で読み上げ中、読み上げ済みに変える', () => {
+    const log = sentLine();
+    expect(log.getAllByText('送信済み').length).toBeGreaterThan(0);
+
+    receive({ type: 'speech_playback', seq: 2, status: 'started' });
+    expect(log.getByText('読み上げ中')).toBeTruthy();
+
+    receive({ type: 'speech_playback', seq: 2, status: 'ended' });
+    expect(log.getByText('読み上げ済み')).toBeTruthy();
+  });
+
+  it('読み上げられなかったら、本人に知らせる', () => {
+    const log = sentLine();
+
+    receive({ type: 'speech_playback', seq: 2, status: 'failed' });
+
+    expect(log.getByText('相手の端末で読み上げられませんでした')).toBeTruthy();
+  });
+
+  it('再接続のスナップショットから状態を戻す', () => {
+    renderConnectedCall();
+    receive(
+      callJoined('patient', {
+        turns: [{ seq: 1, sender: '患者', text: 'あいさつ', origin: 'greeting', playback: 'ended' }],
+      }),
+    );
+
+    expect(within(screen.getByRole('log')).getByText('読み上げ済み')).toBeTruthy();
+  });
+});
+
+describe('予定のない通話の終了画面', () => {
+  const noSchedule: AppointmentDraft = {
+    title: '土曜の待ち合わせ',
+    date: null,
+    startTime: null,
+    endTime: null,
+    location: '',
+    details: '',
+  };
+
+  it('予定が見つからなければ、予定の入力欄を出さず、手で追加できるようにする', () => {
+    renderConnectedCall();
+    receive({ type: 'end_call', appointment: noSchedule, ai: GEMINI });
+
+    expect(screen.getByText('通話の中で、決まった予定は見つかりませんでした。')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Google カレンダーに追加' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '予定を手で追加' }));
+
+    expect(screen.getByRole('button', { name: 'Google カレンダーに追加' })).toHaveProperty(
+      'disabled',
+      true,
+    );
   });
 });

@@ -1,12 +1,14 @@
-import { AlertTriangle, Sparkles } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 import { AI_FAILURE_LABELS } from '@/lib/aiMeta';
 import type { AiMeta, AiStatus } from '@/lib/aiMeta';
 import type { SpeechStatus } from '@/lib/callProtocol';
+import { Notice, cx } from './ui';
 
-const PILL_BASE = 'text-[10px] font-semibold px-2 py-0.5 rounded-full border whitespace-nowrap';
-const PILL_OK = 'bg-green-500/15 text-green-300 border-green-500/40';
-const PILL_WARN = 'bg-amber-500/15 text-amber-300 border-amber-500/40';
-const PILL_NEUTRAL = 'bg-slate-700/60 text-slate-300 border-slate-600';
+const PILL_BASE =
+  'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-[13px] font-bold';
+const PILL_OK = 'border-voice/40 bg-voice-soft text-voice-strong';
+const PILL_WARN = 'border-caution-line bg-caution-soft text-caution';
+const PILL_NEUTRAL = 'border-line bg-surface text-ink-2';
 
 function describe(status: AiStatus | null, last: AiMeta | null) {
   if (last?.source === 'gemini') {
@@ -28,7 +30,7 @@ export function AiStatusBadge({ status, last }: { status: AiStatus | null; last:
   const view = describe(status, last);
   if (!view) return null;
   return (
-    <span data-testid="ai-status" className={`${PILL_BASE} ${view.tone}`} title={view.title}>
+    <span data-testid="ai-status" className={cx(PILL_BASE, view.tone)} title={view.title}>
       {view.label}
     </span>
   );
@@ -38,28 +40,19 @@ export function AiStatusBadge({ status, last }: { status: AiStatus | null; last:
 export function SpeechUnavailableNotice({ status }: { status: SpeechStatus | null }) {
   if (status !== 'unavailable') return null;
   return (
-    <div
-      role="status"
-      className="flex items-center gap-1.5 text-[11px] leading-snug text-amber-200 bg-amber-500/10 border-b border-amber-500/40 px-5 py-1.5 z-20"
-    >
-      <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-      <span>音声認識を利用できません。相手の発話を文字にできません。</span>
-    </div>
+    <Notice tone="caution" role="status">
+      音声認識を利用できません。相手の発話を文字にできません。
+    </Notice>
   );
 }
 
-/** 通話の接続や終了を知らせる帯。音声認識の表示と同じ場所に出す。 */
+/** 通話の接続や終了を知らせる帯。画面の上部、操作の邪魔にならない位置に出す。 */
 export function CallNotice({ text }: { text: string | null }) {
   if (!text) return null;
   return (
-    <div
-      aria-live="polite"
-      data-testid="call-notice"
-      className="flex items-center gap-1.5 text-[11px] leading-snug text-amber-200 bg-amber-500/10 border-b border-amber-500/40 px-5 py-1.5 z-20"
-    >
-      <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-      <span>{text}</span>
-    </div>
+    <Notice tone="caution" live testId="call-notice">
+      {text}
+    </Notice>
   );
 }
 
@@ -67,24 +60,16 @@ export function CallNotice({ text }: { text: string | null }) {
 export function SuggestionSourceNote({ ai }: { ai: AiMeta | null }) {
   if (ai?.source === 'fallback') {
     return (
-      <div
-        role="status"
-        className="flex items-start gap-1.5 text-[11px] leading-snug text-amber-200 bg-amber-500/10 border border-amber-500/40 rounded-lg px-2.5 py-1.5"
-      >
-        <AlertTriangle className="w-3.5 h-3.5 mt-px flex-shrink-0" />
-        <span>
-          <strong className="font-bold">定型文の候補です（AIの回答ではありません）</strong>
-          <br />
-          {AI_FAILURE_LABELS[ai.reason]}。表示された文がそのまま読み上げられます。
-        </span>
-      </div>
+      <Notice tone="caution" role="status" title="定型文の候補です（AIの回答ではありません）">
+        {AI_FAILURE_LABELS[ai.reason]}。表示された文がそのまま読み上げられます。
+      </Notice>
     );
   }
 
   return (
-    <span className="flex items-center gap-1 text-[11px] text-slate-400 font-medium">
-      <Sparkles className="w-3 h-3 text-indigo-300" />
-      AIの返答候補 (タップで表示どおりに読み上げ)
-    </span>
+    <p className="flex items-center gap-1.5 text-[13px] text-ink-2">
+      <Sparkles className="size-3.5 text-voice" aria-hidden />
+      AIの返答候補（押すと表示どおりに読み上げます）
+    </p>
   );
 }

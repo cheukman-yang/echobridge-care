@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import { Check, Copy, Phone } from 'lucide-react';
+import { Check, Copy, Share2 } from 'lucide-react';
 import { buildInviteUrl, formatInviteCode } from '@/lib/callProtocol';
 import type { CallInvite } from '@/lib/callProtocol';
+import { buttonClass } from './ui';
 
 interface CallInviteCardProps {
   invite: CallInvite | null;
   peerConnected: boolean;
+  partnerLabel: string;
   onCancel: () => void;
 }
 
@@ -13,10 +15,11 @@ function formatClock(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
 }
 
-/** 発信中の画面。病院役に渡す招待を表示する。招待を持つ人だけがこの通話に入れる。 */
-export function CallInviteCard({ invite, peerConnected, onCancel }: CallInviteCardProps) {
+/** 発信中の画面。相手に渡す招待を表示する。招待を持つ人だけがこの通話に入れる。 */
+export function CallInviteCard({ invite, peerConnected, partnerLabel, onCancel }: CallInviteCardProps) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const link = invite ? buildInviteUrl(window.location.origin, invite.code) : '';
+  const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
 
   const copyLink = async () => {
     try {
@@ -28,68 +31,84 @@ export function CallInviteCard({ invite, peerConnected, onCancel }: CallInviteCa
     }
   };
 
+  const shareLink = async () => {
+    try {
+      await navigator.share({ title: 'EchoBridgeの通話', text: '通話への招待です', url: link });
+    } catch {
+      // 共有をやめただけの場合もあるので、何も表示しない。
+    }
+  };
+
   return (
-    <div className="flex-1 flex flex-col items-center justify-center gap-4 p-5 overflow-y-auto">
-      <div className="w-16 h-16 rounded-full bg-indigo-500/20 flex items-center justify-center animate-pulse">
-        <Phone className="w-8 h-8 text-indigo-400" />
+    <section aria-labelledby="invite-heading" className="space-y-6">
+      <div className="space-y-2">
+        <h1 id="invite-heading" className="text-[26px] font-bold leading-snug text-balance">
+          {peerConnected ? `${partnerLabel}が応答するのを待っています` : `${partnerLabel}の参加を待っています`}
+        </h1>
+        <p className="text-[15px] leading-relaxed text-ink-2 text-pretty">
+          {peerConnected
+            ? '相手が画面を開きました。応答すると、用件のあいさつを読み上げます。'
+            : '招待リンクかコードを相手に送ってください。受け取った人だけが参加できます。'}
+        </p>
       </div>
-      <p className="text-indigo-300 font-bold text-sm text-center">
-        {peerConnected ? '病院役の応答を待っています...' : '病院役の参加を待っています...'}
-      </p>
 
       {invite ? (
-        <div className="w-full space-y-3 bg-slate-800 border border-slate-700 rounded-xl p-3">
-          <p className="text-xs text-slate-300">
-            病院役にリンクかコードを渡してください。受け取った人だけが参加できます。
-          </p>
-
-          <div className="space-y-1.5">
-            <label className="block text-xs text-slate-400">
-              招待リンク
+        <div className="divide-y divide-line rounded-xl border border-line bg-surface">
+          <div className="space-y-3 p-5">
+            <label className="block space-y-2">
+              <span className="block text-[13px] font-bold text-ink-2">招待リンク</span>
               <input
                 readOnly
                 value={link}
                 onFocus={(event) => event.target.select()}
-                className="mt-1 w-full bg-slate-900 text-slate-200 text-xs rounded-lg px-2.5 py-1.5 border border-slate-600 focus:outline-none focus:border-indigo-500"
+                className="w-full rounded-lg border border-line bg-canvas px-3 py-2.5 text-sm text-ink focus:border-voice"
               />
             </label>
-            <button
-              type="button"
-              onClick={copyLink}
-              className="w-full flex items-center justify-center gap-1.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-white text-xs font-medium py-2 rounded-lg transition active:scale-[0.98]"
-            >
-              {copyState === 'copied' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-              {copyState === 'copied' ? 'コピーしました' : 'リンクをコピー'}
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={copyLink} className={buttonClass('primary', 'md')}>
+                {copyState === 'copied' ? (
+                  <Check className="size-4" aria-hidden />
+                ) : (
+                  <Copy className="size-4" aria-hidden />
+                )}
+                {copyState === 'copied' ? 'コピーしました' : 'リンクをコピー'}
+              </button>
+              {canShare && (
+                <button type="button" onClick={shareLink} className={buttonClass('secondary', 'md')}>
+                  <Share2 className="size-4" aria-hidden />
+                  共有
+                </button>
+              )}
+            </div>
             {copyState === 'failed' && (
-              <p role="alert" className="text-xs text-amber-200">
+              <p role="alert" className="text-sm text-caution">
                 コピーできませんでした。上のリンクを選択してコピーしてください。
               </p>
             )}
           </div>
 
-          <div className="text-center space-y-0.5">
-            <p className="text-xs text-slate-400">通話コード</p>
+          <div className="space-y-1 p-5">
+            <p className="text-[13px] font-bold text-ink-2">通話コード（リンクを開けないとき）</p>
             <p
               data-testid="invite-code"
-              className="font-mono text-lg font-bold tracking-widest text-white select-all"
+              className="select-all text-[28px] font-bold leading-tight text-ink tabular-nums"
             >
               {formatInviteCode(invite.code)}
             </p>
-            <p className="text-[11px] text-slate-400">{formatClock(invite.expiresAt)} まで有効</p>
+            <p className="text-[13px] text-ink-2">
+              {formatClock(invite.expiresAt)} まで有効。相手は参加画面でこのコードを入力します。
+            </p>
           </div>
         </div>
       ) : (
-        <p className="text-xs text-slate-400">通話を準備しています...</p>
+        <p className="rounded-xl border border-line bg-surface p-5 text-[15px] text-ink-2">
+          通話を準備しています...
+        </p>
       )}
 
-      <button
-        type="button"
-        onClick={onCancel}
-        className="text-xs text-slate-300 underline px-2 py-1"
-      >
+      <button type="button" onClick={onCancel} className={buttonClass('secondary', 'md')}>
         発信を取り消す
       </button>
-    </div>
+    </section>
   );
 }
