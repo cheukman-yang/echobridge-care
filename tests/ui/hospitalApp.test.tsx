@@ -805,6 +805,17 @@ describe('相手の画面の字幕と読み上げの報告', () => {
     expect(screen.getByText('佐藤さん')).toBeTruthy();
   });
 
+  it('応答する前と、コードの入力画面で、実在の個人情報を話さないよう伝える', () => {
+    render(<HospitalApp />);
+    act(() => socket().open());
+    expect(screen.getByTestId('demo-data-notice').textContent).toContain('実在の個人情報は話さないでください');
+
+    receive(callJoined('hospital', { phase: 'ringing' }));
+    const notice = screen.getByTestId('demo-data-notice');
+    expect(notice.textContent).toContain('架空の内容');
+    expect(notice.textContent).toContain('Google Cloud（Speech-to-Text、Gemini）');
+  });
+
   it('読み上げの開始と終了を、本人の発言の番号で知らせる', () => {
     answeredCall();
 

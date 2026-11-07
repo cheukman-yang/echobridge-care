@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect, useEffectEvent, useCallback } from 'react';
 import { Mic, Phone, PhoneOff } from 'lucide-react';
 import { CallNotice } from '@/components/AiStatusBadge';
+import { DemoDataNotice } from '@/components/DemoDataNotice';
 import { AppHeader, CallStatus } from '@/components/AppHeader';
 import type { CallStatusTone } from '@/components/AppHeader';
 import { buttonClass, cx } from '@/components/ui';
@@ -785,6 +786,7 @@ export default function HospitalApp() {
                   届いた招待リンクを開くと、自動で参加します。リンクを開けないときは、相手の画面に表示されたコードを入力してください。
                 </p>
               </div>
+              <DemoDataNotice side="partner" />
               <label className="block space-y-2">
                 <span className="block text-[15px] font-bold">通話コード</span>
                 <input
@@ -840,6 +842,7 @@ export default function HospitalApp() {
                   </div>
                 )}
               </dl>
+              <DemoDataNotice side="partner" />
               <div className="grid gap-2 sm:grid-cols-2">
                 <button type="button" onClick={handleAnswerCall} className={buttonClass('primary', 'lg')}>
                   <Phone className="size-5" aria-hidden />

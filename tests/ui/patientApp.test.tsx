@@ -74,6 +74,16 @@ describe('発信前の確認', () => {
       buildGreeting('内科の初診予約をしたいです'),
     );
   });
+
+  it('入力の前に、実在の個人情報を使わないよう伝え、処理する先を示す', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+
+    const notice = screen.getByTestId('demo-data-notice');
+    expect(notice.textContent).toContain('実在の個人情報は入力しないでください');
+    expect(notice.textContent).toContain('架空の内容');
+    expect(notice.textContent).toContain('Google Cloud（Speech-to-Text、Gemini）');
+  });
 });
 
 describe('AIの整形案の確認', () => {

@@ -3,6 +3,7 @@ import { Phone } from 'lucide-react';
 import { MAX_PATIENT_TEXT_LENGTH, buildGreeting } from '@/lib/callProtocol';
 import { CALL_PURPOSES, CALL_PURPOSE_PROFILES, MAX_PARTNER_NAME_LENGTH } from '@/lib/callPurpose';
 import type { CallPurpose } from '@/lib/callPurpose';
+import { DemoDataNotice } from './DemoDataNotice';
 import { buttonClass, cx } from './ui';
 
 interface CallSetupFormProps {
@@ -48,6 +49,8 @@ export function CallSetupForm({
           相手の話は文字で届き、あなたが選んだ文は合成音声で相手に読み上げられます。送る前に必ずあなたが確認します。
         </p>
       </div>
+
+      <DemoDataNotice side="user" />
 
       <fieldset className="space-y-3">
         <legend className="mb-3 text-[15px] font-bold">通話の目的</legend>
