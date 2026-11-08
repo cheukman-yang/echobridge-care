@@ -28,7 +28,7 @@ export interface DeliveryView {
 
 const ENGINE_LABELS: Record<SpeechEngine, string> = {
   cloud: 'Google音声',
-  device: '相手の端末の音声',
+  device: '端末の読み上げ機能',
 };
 
 /** 本人の画面の「送信済み」の行に出す文。 */

@@ -176,6 +176,8 @@ export function createDeviceVoice(): DeviceVoice {
     unlock() {
       const s = synth();
       if (!s) return;
+      // 声の一覧は、最初に求めたときから読み込みが始まるブラウザがある。端末の声で読むときまでに日本語の声を選べるようにする。
+      voices();
       try {
         // iPhoneのSafariは、最初の読み上げが操作の中でないと、その後も鳴らさない。
         const utterance = new SpeechSynthesisUtterance('');
