@@ -273,6 +273,76 @@ describe('広い画面: 全部を同時に表示する', () => {
   });
 });
 
+describe('画面の幅が変わったときのフォーカス', () => {
+  function openReviewInNarrow() {
+    fireEvent.click(tab(/入力/));
+    fireEvent.change(replyInput(), { target: { value: 'あした行けます' } });
+    fireEvent.click(screen.getByRole('button', { name: 'AIで整える' }));
+    const requestId = String(socket().sentOfType('patient_polish_request').at(-1)?.requestId);
+    receive({ type: 'patient_polish_result', requestId, original: 'あした行けます', polished: '明日伺います。', ai: GEMINI });
+  }
+
+  it('PCで編集中のAI案は、狭くしても同じ欄にフォーカスと選択範囲が残り、入力の画面が開く', () => {
+    const viewport = stubViewport(false);
+    renderConnectedCall();
+    openReviewInNarrow();
+    fireEvent.click(tab(/返答候補/));
+    viewport.setWide(true);
+    const field = screen.getByLabelText(/AIの案/) as HTMLTextAreaElement;
+    field.focus();
+    field.setSelectionRange(3, 5);
+
+    viewport.setWide(false);
+
+    expect(tab(/入力/).getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(field);
+    expect([field.selectionStart, field.selectionEnd]).toEqual([3, 5]);
+    expect(screen.getByLabelText(/AIの案/)).toBe(field);
+    expect(confirmedSpeech()).toEqual([]);
+  });
+
+  it('狭い画面で編集中のAI案は、PCに広げても同じ欄にフォーカスとカーソル位置が残る', () => {
+    const viewport = stubViewport(false);
+    renderConnectedCall();
+    openReviewInNarrow();
+    const field = screen.getByLabelText(/AIの案/) as HTMLTextAreaElement;
+    field.focus();
+    field.setSelectionRange(2, 2);
+
+    viewport.setWide(true);
+
+    expect(document.activeElement).toBe(field);
+    expect([field.selectionStart, field.selectionEnd]).toEqual([2, 2]);
+  });
+
+  it('登録文を書いている途中に狭くすると、登録文の画面を開き、フォーカスを残す', () => {
+    const viewport = stubViewport(true);
+    renderConnectedCall();
+    fireEvent.click(screen.getByRole('button', { name: '登録する' }));
+    const editor = screen.getByRole('textbox', { name: '新しい文を登録' }) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: '書きかけの文' } });
+    editor.focus();
+
+    viewport.setWide(false);
+
+    expect(tab(/登録文/).getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(editor);
+  });
+
+  it('候補を見ている途中に狭くしても、開く画面は変えない', () => {
+    const viewport = stubViewport(true);
+    renderConnectedCall();
+    receive({ type: 'suggestions', suggestions: SUGGESTIONS, ai: GEMINI });
+    fireEvent.change(replyInput(), { target: { value: '下書き' } });
+    screen.getByRole('button', { name: /持ち物はありますか。/ }).focus();
+
+    viewport.setWide(false);
+
+    expect(tab(/返答候補/).getAttribute('aria-selected')).toBe('true');
+    expect(confirmedSpeech()).toEqual([]);
+  });
+});
+
 describe('画面の幅が変わったとき（回転、ウィンドウの大きさ）', () => {
   it('入力中の文、登録文の編集中の文、AI案の確認を消さず、何も送らない', () => {
     const viewport = stubViewport(false);

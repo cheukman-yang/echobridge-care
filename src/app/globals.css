@@ -13,6 +13,57 @@
 @custom-variant landscape-short (@media (orientation: landscape) and (max-height: 560px) and (min-width: 640px));
 
 /*
+ * 通話中の画面の格子（CallWorkspace）。
+ * 広い画面と狭い画面で、同じ要素を同じ順に置いたまま配置だけを変える。幅が変わっても入力欄が作り直されず、
+ * フォーカス・カーソル位置・取り消しの履歴が残る。
+ * 会話の記録には最小の高さ（--eb-log-min）を必ず残し、返答の中身は自分の領域の中でスクロールする。
+ * 切り替え・即答フレーズ・送信の失敗の帯は中身の高さで固定し、画面の外へ押し出されない。
+ */
+.eb-call {
+  display: grid;
+  height: 100%;
+  min-height: 0;
+}
+
+.eb-call--narrow {
+  --eb-log-min: 28%;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(var(--eb-log-min), 1fr) auto minmax(0, auto) auto auto;
+  grid-template-areas: "log" "tabs" "panel" "error" "quick";
+}
+
+/* AIに頼んでから確認を終えるまでは、原文・案・送るボタンに高さを回す。 */
+.eb-call--narrow.eb-call--expanded {
+  --eb-log-min: 18%;
+}
+
+.eb-call--wide {
+  --eb-log-min: 35%;
+  grid-template-columns: minmax(0, 1fr) minmax(26rem, 34rem);
+  grid-template-rows: minmax(var(--eb-log-min), 1fr) minmax(0, auto) auto auto;
+  grid-template-areas: "log side" "compose side" "error side" "quick side";
+}
+
+.eb-call--wide.eb-call--expanded {
+  --eb-log-min: 25%;
+}
+
+/* 低い画面（キーボード表示中など）。記録は2〜3行分だけ残し、入力欄と送るボタンを優先する。 */
+@media (max-height: 560px) {
+  .eb-call.eb-call--narrow {
+    --eb-log-min: clamp(2.75rem, 20%, 6rem);
+  }
+}
+
+@media (orientation: landscape) and (max-height: 560px) and (min-width: 640px) {
+  .eb-call.eb-call--narrow {
+    grid-template-columns: minmax(0, 1fr) min(26rem, 52%);
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    grid-template-areas: "log tabs" "log panel" "log error" "log quick";
+  }
+}
+
+/*
  * EchoBridge のデザイントークン。
  * 色は「面（白とごく薄いグレー）」「文字」「本人の声（ティール）」「注意（琥珀）」「切断・失敗（赤）」に絞る。
  * ティールは本人が送った文と主な操作だけに使い、装飾には使わない。

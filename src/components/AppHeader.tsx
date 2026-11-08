@@ -43,7 +43,8 @@ interface AppHeaderProps {
 export function AppHeader({ status, actions, compactOnMobile = false }: AppHeaderProps) {
   return (
     <header className="border-b border-line bg-surface pt-[env(safe-area-inset-top)]">
-      <div className="mx-auto flex min-h-14 max-w-[1440px] flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 lg:px-6">
+      {/* キーボード表示中など高さが低いときは、上下の余白を詰めて返答欄に高さを回す。ボタンの大きさは変えない。 */}
+      <div className="mx-auto flex min-h-14 max-w-[1440px] flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 lg:px-6 tiny:min-h-0 tiny:py-0.5">
         <p
           className={cx(
             'text-[17px] font-bold tracking-normal text-ink',

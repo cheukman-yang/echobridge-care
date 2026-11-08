@@ -35,13 +35,14 @@ interface ReplyTabsProps {
   onSelect(tab: ReplyTab): void;
   /** タブごとの状態（新着、下書き、件数など）。 */
   marks: Partial<Record<ReplyTab, ReactNode>>;
+  className?: string;
 }
 
 /**
  * 狭い画面で返答の方法を切り替える。WAI-ARIAのタブの形（左右キーで移動し、移った先を開く）。
  * 切り替えるのは本人の操作だけで、候補が届いても勝手には切り替えない。
  */
-export function ReplyTabs({ active, onSelect, marks }: ReplyTabsProps) {
+export function ReplyTabs({ active, onSelect, marks, className }: ReplyTabsProps) {
   const buttons = useRef<Partial<Record<ReplyTab, HTMLButtonElement | null>>>({});
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -69,7 +70,11 @@ export function ReplyTabs({ active, onSelect, marks }: ReplyTabsProps) {
       role="tablist"
       aria-label="返答の方法"
       onKeyDown={onKeyDown}
-      className="grid shrink-0 grid-cols-3 border-b border-line px-2"
+      className={cx(
+        // 返答欄の上端。横向きでは右列の先頭なので上の線は引かない。
+        'grid grid-cols-3 border-y border-line bg-surface px-2 landscape-short:border-t-0',
+        className,
+      )}
     >
       {REPLY_TABS.map((tab) => {
         const selected = tab.id === active;

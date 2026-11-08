@@ -104,9 +104,10 @@ export function ConversationLog({
 
   return (
     <div ref={scrollerRef} onScroll={onScroll} className="h-full overflow-y-auto overscroll-contain">
-      <div className="mx-auto max-w-3xl px-4 py-5 lg:px-8 lg:py-6">
+      {/* 高さが低いとき（キーボード表示中など）は余白を詰め、残した数行に相手の言葉を多く見せる。 */}
+      <div className="mx-auto max-w-3xl px-4 py-5 lg:px-8 lg:py-6 short:py-2">
         <h2 className="sr-only">会話の記録</h2>
-        <ol role="log" aria-label="会話の記録" className="space-y-5">
+        <ol role="log" aria-label="会話の記録" className="space-y-5 short:space-y-3">
           {messages.map((message) => {
             if (message.origin === 'notice') {
               return (
@@ -128,7 +129,7 @@ export function ConversationLog({
                 </p>
                 <p
                   className={cx(
-                    'max-w-[min(40rem,88%)] rounded-xl px-4 py-3 text-[17px] leading-(--leading-talk) text-pretty break-words',
+                    'max-w-[min(40rem,88%)] rounded-xl px-4 py-3 text-[17px] leading-(--leading-talk) text-pretty break-words short:py-2',
                     isMine ? 'bg-voice-soft text-ink' : 'border border-line bg-surface text-ink',
                   )}
                 >

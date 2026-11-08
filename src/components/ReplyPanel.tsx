@@ -216,18 +216,16 @@ export function ReplyComposer(props: ReplyComposerProps) {
         placeholder="伝えたいことを入力"
         className="field-sizing-content block max-h-40 min-h-[3.5rem] w-full resize-none rounded-lg border border-line-strong bg-surface px-3.5 py-2.5 text-[17px] leading-relaxed text-ink placeholder:text-ink-2/70 focus:border-voice disabled:bg-subtle short:max-h-24"
       />
-      {wide && !isPolishing ? (
-        // 広い画面ではヒントとボタンを1行に並べ、会話の記録に高さを残す。
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          {hint}
-          {actions}
-        </div>
-      ) : (
-        <>
-          {hint}
-          {actions}
-        </>
-      )}
+      {/* 広い画面ではヒントとボタンを1行に並べ、会話の記録に高さを残す。
+          幅が変わってもボタンを作り直さないよう、包む要素はいつも同じにする。 */}
+      <div
+        className={cx(
+          wide && !isPolishing ? 'flex flex-wrap items-center justify-between gap-x-4 gap-y-2' : 'space-y-2.5 short:space-y-2',
+        )}
+      >
+        {hint}
+        {actions}
+      </div>
       {isPartnerSpeaking && hasInput && !isPolishing && (
         <p className="text-[13px] text-ink-2">{partnerLabel}が話し終わると送信できます。</p>
       )}
@@ -236,12 +234,12 @@ export function ReplyComposer(props: ReplyComposerProps) {
 }
 
 /** 送信の失敗。どの方法で送っても見える場所（即答フレーズの上）に出す。開いていない方法の中には出さない。 */
-export function SendErrorNotice({ message }: { message: string | null }) {
+export function SendErrorNotice({ message, className }: { message: string | null; className?: string }) {
   if (!message) return null;
   return (
     <p
       role="alert"
-      className="shrink-0 bg-danger-soft px-4 py-2.5 text-[14px] font-bold text-danger-strong lg:px-8"
+      className={cx('bg-danger-soft px-4 py-2.5 text-[14px] font-bold text-danger-strong lg:px-8', className)}
     >
       {message}
     </p>
@@ -250,33 +248,35 @@ export function SendErrorNotice({ message }: { message: string | null }) {
 
 /**
  * 会話を続けるための定型の返事。時間をもらう文と聞き返しを先頭に置く。
- * どの方法を開いていても、AI案の確認中でも押せる場所に固定する。
+ * どの方法を開いていても、AI案の確認中でも押せるよう、下端に固定する。
  * - 狭い画面: 返答欄の下端（親指の届く位置、キーボードの真上）。1列で横に流し、高さが低いときは見出しを省く。
- * - 広い画面: 手入力の真上（チャットの定型返信と同じ位置）。右列の高さを候補と登録文に回す。
+ * - 広い画面: 左列の下端（手入力の下）。右列の高さを候補と登録文に回す。
+ * 幅が変わってもボタンを作り直さないよう、要素の形は同じにし、クラスだけを変える。
  */
 export function QuickPhraseBar({
   wide,
   disabled,
   partnerLabel,
   onSend,
+  className,
 }: {
   wide: boolean;
   disabled: boolean;
   partnerLabel: string;
   onSend(text: string): void;
+  className?: string;
 }) {
   return (
     <div
       role="group"
       aria-labelledby="quick-heading"
       className={cx(
-        'shrink-0 bg-surface',
-        wide
-          ? 'mx-auto w-full max-w-3xl px-8 pt-3'
-          : 'border-t border-line px-4 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] short:pt-2 short:pb-[max(0.5rem,env(safe-area-inset-bottom))]',
+        'border-t border-line bg-surface pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] short:pt-2 short:pb-[max(0.5rem,env(safe-area-inset-bottom))] tiny:pt-1.5 tiny:pb-[max(0.375rem,env(safe-area-inset-bottom))]',
+        wide ? 'px-8' : 'px-4',
+        className,
       )}
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 short:sr-only">
+      <div className={cx('flex flex-wrap items-baseline justify-between gap-x-3 short:sr-only', wide && 'mx-auto max-w-3xl')}>
         <h2 id="quick-heading" className="text-[14px] font-bold text-ink">
           即答フレーズ
         </h2>
@@ -287,7 +287,7 @@ export function QuickPhraseBar({
       <div
         className={cx(
           'mt-2 flex gap-2 short:mt-0',
-          wide ? 'flex-wrap' : 'eb-scroll-row -mx-4 overflow-x-auto px-4 pb-0.5',
+          wide ? 'mx-auto max-w-3xl flex-wrap' : 'eb-scroll-row -mx-4 overflow-x-auto px-4 pb-0.5',
         )}
       >
         {QUICK_PHRASES.map((phrase) => (
