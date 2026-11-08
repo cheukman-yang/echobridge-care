@@ -5,6 +5,7 @@ import PatientApp from '@/app/page';
 import type { AiMeta } from '@/lib/aiMeta';
 import { CLOSE_CODE_IDLE, buildGreeting } from '@/lib/callProtocol';
 import type { AppointmentDraft, ServerMessage } from '@/lib/callProtocol';
+import { clearCustomPhrases } from '@/lib/customPhrases';
 import { SEAT_TOKEN, callJoined } from '../helpers/callMessages';
 import { FakeWebSocket } from '../helpers/fakeWebSocket';
 
@@ -1194,5 +1195,101 @@ describe('開発用のモックモード', () => {
     receive({ type: 'ai_status', configured: true, backend: 'vertex', model: 'gemini-test' });
 
     expect(screen.queryByTestId('mock-mode-notice')).toBeNull();
+  });
+});
+
+describe('登録した文（カスタム返答）', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    clearCustomPhrases();
+  });
+
+  const SELF_INTRO = '発話に障害があるため、AIの音声でお話ししています。';
+
+  function registerInCall(text: string) {
+    fireEvent.click(screen.getByRole('button', { name: '登録する' }));
+    fireEvent.change(screen.getByRole('textbox', { name: '新しい文を登録' }), { target: { value: text } });
+    fireEvent.click(screen.getByRole('button', { name: '登録する' }));
+    fireEvent.click(screen.getByRole('button', { name: '完了' }));
+  }
+
+  it('登録・修正・削除の操作では、相手に何も送らない', () => {
+    renderConnectedCall();
+
+    registerInCall(SELF_INTRO);
+    fireEvent.click(screen.getByRole('button', { name: '登録した文を編集' }));
+    fireEvent.click(screen.getByRole('button', { name: `直す: ${SELF_INTRO}` }));
+    fireEvent.change(screen.getByRole('textbox', { name: '登録した文を直す' }), { target: { value: '直した文です。' } });
+    fireEvent.click(screen.getByRole('button', { name: '直した文を保存' }));
+    fireEvent.click(screen.getByRole('button', { name: '削除: 直した文です。' }));
+
+    expect(confirmedSpeech()).toEqual([]);
+  });
+
+  it('全文を表示し、押すと表示どおりの文を、登録した文の経路で送る', () => {
+    renderConnectedCall();
+    registerInCall(`  ${SELF_INTRO}\n`);
+
+    expect(screen.getByText(SELF_INTRO)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: `この文を送る: ${SELF_INTRO}` }));
+
+    expect(confirmedSpeech()).toEqual([{ type: 'patient_confirmed_speech', text: SELF_INTRO, origin: 'custom_phrase' }]);
+  });
+
+  it('送っても返答候補を残す', () => {
+    renderConnectedCall();
+    registerInCall(SELF_INTRO);
+    receive({ type: 'suggestions', suggestions: [{ text: 'はい、お願いします。', tag: '承諾' }], ai: GEMINI });
+
+    fireEvent.click(screen.getByRole('button', { name: `この文を送る: ${SELF_INTRO}` }));
+
+    expect(screen.getByRole('button', { name: /はい、お願いします。/ })).toBeTruthy();
+  });
+
+  it('相手の発話中は送れない', () => {
+    renderConnectedCall();
+    registerInCall(SELF_INTRO);
+    receive({ type: 'hospital_speaking_start' });
+
+    const send = screen.getByRole('button', { name: `この文を送る: ${SELF_INTRO}` }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    fireEvent.click(send);
+    expect(confirmedSpeech()).toEqual([]);
+  });
+
+  it('この端末に保存し、画面を開き直しても残る', () => {
+    renderConnectedCall();
+    registerInCall(SELF_INTRO);
+    cleanup();
+
+    renderConnectedCall();
+
+    expect(screen.getByRole('button', { name: `この文を送る: ${SELF_INTRO}` })).toBeTruthy();
+  });
+
+  it('すべて削除は確かめてから、端末からも消す', () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderConnectedCall();
+    registerInCall(SELF_INTRO);
+    fireEvent.click(screen.getByRole('button', { name: '登録した文を編集' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'すべて削除' }));
+
+    expect(confirm).toHaveBeenCalled();
+    expect(window.localStorage.getItem('echobridge.customPhrases.v1')).toBeNull();
+    expect(screen.queryByText(SELF_INTRO)).toBeNull();
+  });
+
+  it('発信前の画面でも登録でき、保存先と削除の方法を示す', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+
+    fireEvent.click(screen.getByText('よく使う文の登録（任意）'));
+    expect(screen.getByTestId('custom-phrases-privacy').textContent).toContain('この端末のブラウザにだけ保存');
+    fireEvent.change(screen.getByRole('textbox', { name: '新しい文を登録' }), { target: { value: SELF_INTRO } });
+    fireEvent.click(screen.getByRole('button', { name: '登録する' }));
+
+    expect(screen.getByText(SELF_INTRO)).toBeTruthy();
+    expect(socket().sentOfType('patient_confirmed_speech')).toEqual([]);
   });
 });

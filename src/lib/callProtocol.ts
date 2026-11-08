@@ -90,9 +90,19 @@ export const SPEECH_ORIGINS = [
   'suggestion',
   'fallback_suggestion',
   'quick_phrase',
+  // 本人が自分の端末に登録した文。表示した文をそのまま送る。
+  'custom_phrase',
 ] as const;
 
 export type SpeechOrigin = (typeof SPEECH_ORIGINS)[number];
+
+/**
+ * 送っても返答候補を残す経路。「少々お待ちください」や自己紹介のように会話をつなぐ文なので、
+ * 相手の直前の発言への候補は、送った後もそのまま使える。
+ */
+export function keepsSuggestions(origin: SpeechOrigin): boolean {
+  return origin === 'quick_phrase' || origin === 'custom_phrase';
+}
 
 /**
  * 相手の端末での読み上げの状態。相手の画面が報告する。

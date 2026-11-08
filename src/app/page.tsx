@@ -8,6 +8,7 @@ import type { CallStatusTone } from '@/components/AppHeader';
 import { CallFlowGuide, CallSetupForm } from '@/components/CallSetupForm';
 import { CallInviteCard } from '@/components/CallInviteCard';
 import { CallSummary } from '@/components/CallSummary';
+import { CustomPhrasesSection } from '@/components/CustomPhrases';
 import type { TranscriptLine } from '@/components/CallSummary';
 import { ConversationLog, ORIGIN_LABELS } from '@/components/ConversationLog';
 import type { LogMessage } from '@/components/ConversationLog';
@@ -22,7 +23,7 @@ import {
   RECONNECTING_NOTICE,
   SEAT_TAKEN_NOTICE,
 } from '@/lib/callNotices';
-import { TYPING_NOTICE_TEXT } from '@/lib/callProtocol';
+import { TYPING_NOTICE_TEXT, keepsSuggestions } from '@/lib/callProtocol';
 import type {
   AppointmentResult,
   CallInvite,
@@ -356,8 +357,8 @@ export default function PatientApp() {
     }
     setSendError(null);
     clearIdleTimer();
-    // 即答フレーズは「少々お待ちください」のように会話をつなぐ文なので、返答候補は残す。サーバーも残す。
-    if (origin !== 'quick_phrase') {
+    // 即答フレーズと登録した文は会話をつなぐ文なので、返答候補は残す。サーバーも残す。
+    if (!keepsSuggestions(origin)) {
       setSuggestions([]);
       setSuggestionsAi(null);
       setIsGenerating(false);
@@ -421,6 +422,12 @@ export default function PatientApp() {
   const handleSendQuickPhrase = (text: string) => {
     if (isHospitalSpeaking) return;
     sendConfirmedSpeech(text, 'quick_phrase');
+  };
+
+  /** 本人が登録した文を、表示どおりに送る。AIは通さない。 */
+  const handleSendCustomPhrase = (text: string) => {
+    if (isHospitalSpeaking) return;
+    sendConfirmedSpeech(text, 'custom_phrase');
   };
 
   const handleEndCall = () => {
@@ -537,8 +544,9 @@ export default function PatientApp() {
                 onIntentChange={setIntent}
                 onStart={handleStartCall}
               />
-              <div className="lg:pt-14">
+              <div className="space-y-6 lg:pt-14">
                 <CallFlowGuide />
+                <CustomPhrasesSection mode="setup" />
               </div>
             </div>
           </div>
@@ -589,6 +597,7 @@ export default function PatientApp() {
                 onSendTyped={handleSendTyped}
                 onSendSuggestion={handleSendSuggestion}
                 onSendQuickPhrase={handleSendQuickPhrase}
+                onSendCustomPhrase={handleSendCustomPhrase}
                 onEditDraft={(draft) => dispatchComposer({ type: 'edit_draft', draft })}
                 onReviewSend={handleReviewSend}
                 onCloseReview={() => dispatchComposer({ type: 'close' })}

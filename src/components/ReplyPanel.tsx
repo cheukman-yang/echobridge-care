@@ -6,6 +6,7 @@ import type { SuggestionItem } from '@/lib/callProtocol';
 import type { ComposerState, SpeechChoice } from '@/lib/composer';
 import { QUICK_PHRASES } from '@/lib/quickPhrases';
 import { SuggestionSourceNote } from './AiStatusBadge';
+import { CustomPhrasesSection } from './CustomPhrases';
 import { PolishReviewPanel } from './PolishReviewPanel';
 import { SectionHeading, buttonClass, cx } from './ui';
 
@@ -26,6 +27,7 @@ interface ReplyPanelProps {
   onSendTyped(): void;
   onSendSuggestion(text: string): void;
   onSendQuickPhrase(text: string): void;
+  onSendCustomPhrase(text: string): void;
   onEditDraft(draft: string): void;
   onReviewSend(choice: SpeechChoice): void;
   onCloseReview(): void;
@@ -192,6 +194,13 @@ export function ReplyPanel(props: ReplyPanelProps) {
                 </p>
               )}
             </section>
+
+            <CustomPhrasesSection
+              mode="call"
+              canSend={canSend}
+              partnerLabel={partnerLabel}
+              onSend={props.onSendCustomPhrase}
+            />
           </div>
         )}
       </div>

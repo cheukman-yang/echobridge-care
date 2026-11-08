@@ -21,6 +21,7 @@ export const ORIGIN_LABELS: Record<MessageOrigin, string> = {
   suggestion: 'AI候補から選択',
   fallback_suggestion: '定型文から選択',
   quick_phrase: '即答フレーズ',
+  custom_phrase: '登録した文',
 };
 
 const PLAYBACK_LABELS: Record<PlaybackStatus | 'sent', string> = {

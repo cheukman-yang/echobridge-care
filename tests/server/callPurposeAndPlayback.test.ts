@@ -207,4 +207,21 @@ describe('即答フレーズと返答候補', () => {
 
     expect(second.snapshot.suggestions).toBeNull();
   });
+
+  it('登録した文は書き換えずに相手へ届け、経路を記録し、返答候補を残す', async () => {
+    await testServer.listen(createFakeModels(() => jsonReply(THREE)));
+    const call = await testServer.openCall();
+    const { seatToken } = await call.patient.waitFor('call_joined');
+    await testServer.hospitalSays(call, 'お名前を教えてください');
+    await call.patient.waitFor('suggestions');
+    const text = '発話に障害があるため、AIの音声でお話ししています。';
+
+    call.patient.send({ type: 'patient_confirmed_speech', text, origin: 'custom_phrase' });
+
+    const spoken = await call.hospital.waitFor('patient_speech');
+    expect(spoken).toMatchObject({ text, origin: 'custom_phrase' });
+    const { snapshot } = await snapshotAfterReconnect(seatToken);
+    expect(snapshot.turns.at(-1)).toMatchObject({ text, origin: 'custom_phrase' });
+    expect(snapshot.suggestions?.suggestions).toEqual(THREE.suggestions);
+  });
 });
