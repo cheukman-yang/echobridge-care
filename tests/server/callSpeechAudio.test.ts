@@ -254,6 +254,23 @@ describe('サーバーでの音声合成と、相手への配信', () => {
       expect(call.hospital.all('speech_replay')).toHaveLength(MAX_REPLAYS_PER_TURN);
     });
 
+    it('読み直しの回数は再接続のスナップショットにも残す（本人の画面が上限のボタンを出さないため）', async () => {
+      await testServer.listen(null, undefined, undefined, tts);
+      const call = await testServer.openCall();
+      await speak(call.patient, '本人の文');
+      const speech = await call.hospital.waitFor('patient_speech');
+      call.patient.send({ type: 'speech_replay_request', seq: speech.seq });
+      call.patient.send({ type: 'speech_replay_request', seq: speech.seq });
+      await call.hospital.waitFor('speech_replay', 2);
+      const seatToken = (await call.patient.waitFor('call_joined')).seatToken;
+
+      const again = await testServer.connect();
+      again.send({ type: 'join_call', seatToken });
+      const joined = await again.waitFor('call_joined');
+
+      expect(joined.snapshot.turns.find((turn) => turn.seq === speech.seq)?.replays).toBe(2);
+    });
+
     it('相手の発言は読み直せず、相手の席からは頼めない', async () => {
       await testServer.listen(null, undefined, undefined, tts);
       const call = await testServer.openCall();

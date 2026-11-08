@@ -307,7 +307,6 @@ export class CallRoom {
   // あいさつは本人が発信前に確認した文なので、相手が着信画面を開いた時点で作り始める。
   private greetingAudio: Promise<SynthesisOutcome> | null = null;
   private synthesizedChars = 0;
-  private replays = new Map<number, number>();
 
   constructor(
     private readonly deps: CallRoomDeps,
@@ -509,12 +508,13 @@ export class CallRoom {
   /**
    * 本人が、自分の文を相手の端末でもう一度読み上げるよう頼んだ。新しい発言にはしない。
    * 回数に上限を設け、押し続けても相手の端末で鳴り続けないようにする。
+   * 回数は発言に持たせ、スナップショットで本人の画面にも渡す（再接続しても上限のボタンを出さない）。
    */
   replaySpeech(seq: number): boolean {
     const turn = this.patientTurn(seq);
-    const count = this.replays.get(seq) ?? 0;
+    const count = turn?.replays ?? 0;
     if (!turn || count >= MAX_REPLAYS_PER_TURN) return false;
-    this.replays.set(seq, count + 1);
+    turn.replays = count + 1;
     turn.playback = undefined;
     turn.playbackEngine = undefined;
     this.sendTo('hospital', { type: 'speech_replay', seq });

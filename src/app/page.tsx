@@ -36,7 +36,7 @@ import type {
   SpeechVoice,
   SuggestionItem,
 } from '@/lib/callProtocol';
-import { deliveryFromTurns } from '@/lib/speechDelivery';
+import { canRequestReplay, deliveryFromTurns } from '@/lib/speechDelivery';
 import type { SpeechDelivery } from '@/lib/speechDelivery';
 import { CALL_PURPOSE_PROFILES, DEFAULT_CALL_PURPOSE } from '@/lib/callPurpose';
 import type { CallPurpose } from '@/lib/callPurpose';
@@ -364,8 +364,15 @@ export default function PatientApp() {
 
   /** 送った文を、相手の端末でもう一度読み上げてもらう。新しい発言にはしない。 */
   const handleReplay = (seq: number) => {
+    const current = delivery[String(seq)];
+    if (!canRequestReplay(current)) return;
     if (!channel.send({ type: 'speech_replay_request', seq })) return;
-    updateDelivery(seq, { playback: undefined, engine: undefined, replayRequested: true });
+    updateDelivery(seq, {
+      playback: undefined,
+      engine: undefined,
+      replayRequested: true,
+      replays: (current?.replays ?? 0) + 1,
+    });
   };
 
   /** 本人が確定した文を送る唯一の経路。textは書き換えずにそのまま渡す。 */

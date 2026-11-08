@@ -237,6 +237,8 @@ export interface CallTurn extends ChatTurn {
   /** 本人の発言だけにある。サーバーでの音声の合成の結果。まだなら undefined。 */
   synthesis?: SynthesisStatus;
   synthesisReason?: SynthesisFailureReason;
+  /** 本人の発言だけにある。読み直しを頼んだ回数。上限（MAX_REPLAYS_PER_TURN）に達したら本人の画面はボタンを出さない。 */
+  replays?: number;
 }
 
 export interface CallInvite {

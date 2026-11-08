@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PatientApp from '@/app/page';
 import type { AiMeta } from '@/lib/aiMeta';
-import { CLOSE_CODE_IDLE, buildGreeting } from '@/lib/callProtocol';
+import { CLOSE_CODE_IDLE, MAX_REPLAYS_PER_TURN, buildGreeting } from '@/lib/callProtocol';
 import type { AppointmentDraft, ServerMessage } from '@/lib/callProtocol';
 import { clearCustomPhrases } from '@/lib/customPhrases';
 import { SEAT_TOKEN, callJoined } from '../helpers/callMessages';
@@ -1283,6 +1283,49 @@ describe('相手の端末での読み上げの状態', () => {
     );
 
     expect(within(screen.getByRole('log')).getByText('相手の端末で再生済み（Google音声）')).toBeTruthy();
+  });
+
+  it(`同じ文の読み直しは${MAX_REPLAYS_PER_TURN}回まで。上限に達したらボタンを出さず、送信の失敗とも言わない`, () => {
+    const log = sentLine();
+    receive({ type: 'speech_playback', seq: 2, status: 'ended', engine: 'cloud' });
+
+    for (let i = 0; i < MAX_REPLAYS_PER_TURN; i += 1) {
+      fireEvent.click(log.getByRole('button', { name: 'もう一度読み上げる' }));
+      receive({ type: 'speech_playback', seq: 2, status: 'started', engine: 'cloud' });
+      receive({ type: 'speech_playback', seq: 2, status: 'ended', engine: 'cloud' });
+    }
+
+    expect(socket().sentOfType('speech_replay_request')).toHaveLength(MAX_REPLAYS_PER_TURN);
+    expect(log.getByText('相手の端末で再生済み（Google音声）')).toBeTruthy();
+    expect(log.queryByRole('button', { name: 'もう一度読み上げる' })).toBeNull();
+    expect(screen.queryByText(/その文は相手に届いていません/)).toBeNull();
+  });
+
+  it('再接続しても、上限まで読み直した文にはボタンを出さない', () => {
+    const snapshotWith = (replays: number) =>
+      callJoined('patient', {
+        turns: [
+          { seq: 1, sender: '患者', text: 'あいさつ', origin: 'greeting', playback: 'ended', playbackEngine: 'cloud' },
+          {
+            seq: 2,
+            sender: '患者',
+            text: '本人の文です',
+            origin: 'typed',
+            synthesis: 'ready',
+            playback: 'ended',
+            playbackEngine: 'cloud',
+            replays,
+          },
+        ],
+      });
+    renderConnectedCall();
+    const log = () => within(screen.getByRole('log'));
+
+    receive(snapshotWith(MAX_REPLAYS_PER_TURN - 1));
+    expect(log().getAllByRole('button', { name: 'もう一度読み上げる' })).toHaveLength(1);
+
+    receive(snapshotWith(MAX_REPLAYS_PER_TURN));
+    expect(log().queryByRole('button', { name: 'もう一度読み上げる' })).toBeNull();
   });
 });
 

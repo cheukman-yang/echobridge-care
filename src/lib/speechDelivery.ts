@@ -1,3 +1,4 @@
+import { MAX_REPLAYS_PER_TURN } from './callProtocol';
 import type {
   CallTurn,
   PlaybackStatus,
@@ -17,6 +18,8 @@ export interface SpeechDelivery {
   engine?: SpeechEngine;
   /** 本人が読み直しを頼み、まだ相手の端末から報告がない。 */
   replayRequested?: boolean;
+  /** 読み直しを頼んだ回数。サーバーと同じ上限で、ボタンを出すかを決める。 */
+  replays?: number;
 }
 
 export type DeliveryTone = 'muted' | 'live' | 'done' | 'warning' | 'danger';
@@ -57,8 +60,12 @@ export function describeDelivery(delivery: SpeechDelivery | undefined, ttsAvaila
   return ttsAvailable ? { label: '音声を作成中', tone: 'muted' } : { label: '送信済み', tone: 'muted' };
 }
 
-/** 読み直しを頼めるか。鳴り終えた文と、鳴らせなかった文だけ。 */
+/**
+ * 読み直しを頼めるか。鳴り終えた文と、鳴らせなかった文だけ。
+ * サーバーは上限を超えた依頼を断るので、上限に達した文にはボタンを出さない（押しても相手で鳴らないため）。
+ */
 export function canRequestReplay(delivery: SpeechDelivery | undefined): boolean {
+  if ((delivery?.replays ?? 0) >= MAX_REPLAYS_PER_TURN) return false;
   return delivery?.playback === 'ended' || delivery?.playback === 'failed';
 }
 
@@ -70,6 +77,7 @@ export function deliveryFromTurns(turns: CallTurn[]): Record<string, SpeechDeliv
       synthesisReason: turn.synthesisReason,
       playback: turn.playback,
       engine: turn.playbackEngine,
+      replays: turn.replays,
     };
     return Object.values(delivery).some((value) => value !== undefined) ? [[String(turn.seq), delivery]] : [];
   });
