@@ -10,6 +10,12 @@ export const TYPING_NOTICE_TEXT = '通話内容入力中のためお待ちくだ
 /** 通話サーバーのWebSocketのパス。 */
 export const CALL_SOCKET_PATH = '/ws/call';
 
+/**
+ * 相手の画面からサーバーへ送る録音のサンプリングレート。16bit・モノラルのPCM（リトルエンディアン）で送る。
+ * Speech-to-Text の認識設定（server/speechRecognizer.ts）も、この値を使う。
+ */
+export const STT_SAMPLE_RATE_HZ = 16000;
+
 /** 同じ席に新しい接続が入り、古い接続を閉じたときのクローズコード。 */
 export const CLOSE_CODE_SEAT_TAKEN = 4001;
 

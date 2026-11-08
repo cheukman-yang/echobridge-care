@@ -5,6 +5,7 @@ import {
   INVITE_CODE_ALPHABET,
   INVITE_CODE_LENGTH,
   MAX_REPLAYS_PER_TURN,
+  STT_SAMPLE_RATE_HZ,
   TYPING_NOTICE_TEXT,
   buildGreeting,
   keepsSuggestions,
@@ -104,6 +105,9 @@ function abandonStream(stream: RecognizeStream): void {
  * STTは送信を閉じた後に最終結果を返すので、待たないと文末が欠ける。届かなければ途中の結果で確定する。
  */
 export const FINAL_TRANSCRIPT_WAIT_MS = 2_000;
+
+/** 録音1ミリ秒あたりのバイト数（16bit・モノラル）。ログに音声の長さを出すのに使う。 */
+const AUDIO_BYTES_PER_MS = (STT_SAMPLE_RATE_HZ * 2) / 1000;
 
 /**
  * 1回の発話の認識結果。
@@ -291,6 +295,8 @@ export class CallRoom {
   private turns: CallTurn[] = [];
   private nextSeq = 1;
   private speechCapture: SpeechCapture | null = null;
+  // 今の発話でSTTへ書いた音声の量。実機で音声が届いたかをログで確かめる（本文は残さない）。
+  private recordedAudioBytes = 0;
   private isHospitalRecording = false;
   private isPatientSpeaking = false;
   private recognition: Recognition | null = null;
@@ -398,6 +404,7 @@ export class CallRoom {
 
   startRecording(): void {
     this.speechCapture = new SpeechCapture();
+    this.recordedAudioBytes = 0;
     this.isHospitalRecording = this.openRecognitionStream();
     // 画面はこの配信を受け付けの合図にして、届くまで録音中と表示しない。
     if (this.isHospitalRecording) {
@@ -418,12 +425,15 @@ export class CallRoom {
     const stream = this.recognition?.stream;
     if (this.isHospitalRecording && stream?.writable) {
       stream.write(chunk);
+      this.recordedAudioBytes += chunk.length;
     }
   }
 
   async finishHospitalSpeech(): Promise<void> {
     const capture = this.speechCapture;
     const recognition = this.recognition;
+    // 結果を待つ間に次の録音が始まると数え直すので、先に読む。
+    const audioMs = Math.round(this.recordedAudioBytes / AUDIO_BYTES_PER_MS);
     this.speechCapture = null;
     this.recognition = null;
     this.isHospitalRecording = false;
@@ -433,12 +443,15 @@ export class CallRoom {
       const ended = await settleRecognition(recognition.stream, FINAL_TRANSCRIPT_WAIT_MS);
       // 待ち終えた後に遅れて届く結果は、確定した発話に足さない。
       recognition.detach();
-      // 本文は残さない。待ち時間と、途中の結果のまま確定したかだけを記録する。
+      // 本文は残さない。待ち時間、途中の結果のまま確定したか、届いた音声の長さ、文字になったかだけを記録する。
+      // 音声が0msなら端末のマイク、音声があって文字にならなければ認識（音量・雑音）を疑う。
       logEvent('INFO', 'stt_settled', {
         callId: this.id,
         waitMs: Date.now() - startedAt,
         ended,
         usedInterim: capture?.hasInterim ?? false,
+        audioMs,
+        recognized: (capture?.text ?? '') !== '',
       });
     }
     // 待っている間に通話が終わったら、発話として扱わない。

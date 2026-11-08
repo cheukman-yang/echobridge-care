@@ -1,11 +1,12 @@
 import { EventEmitter } from 'node:events';
+import { STT_SAMPLE_RATE_HZ } from '../src/lib/callProtocol';
 import type { SpeechStatus } from '../src/lib/callProtocol';
 import type { RecognizeStream, SpeechRecognizer } from './callServer';
 
 const STREAMING_REQUEST = {
   config: {
     encoding: 'LINEAR16' as const,
-    sampleRateHertz: 16000,
+    sampleRateHertz: STT_SAMPLE_RATE_HZ,
     languageCode: 'ja-JP',
   },
   interimResults: true,

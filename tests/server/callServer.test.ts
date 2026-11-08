@@ -204,6 +204,39 @@ describe('attachCallServer', () => {
       await vi.waitFor(() => expect(stream().written).toHaveLength(1));
     });
 
+    // 実機でマイクの音が届いたかを、本文を残さずに確かめるため。0msなら端末のマイク、音があって文字がなければ認識を疑う。
+    it('発話ごとに、届いた音声の長さと文字になったかをログに残す（本文は残さない）', async () => {
+      const { patient, hospital, stream } = await start(createFakeModels(() => jsonReply(THREE_SUGGESTIONS)));
+      const settledLogs = () =>
+        logSpy.mock.calls
+          .map((args: unknown[]) => JSON.parse(String(args[0])) as Record<string, unknown>)
+          .filter((entry: Record<string, unknown>) => entry.message === 'stt_settled');
+
+      hospital.send({ type: 'hospital_speaking_start' });
+      await hospital.waitFor('hospital_speaking_start');
+      // 16kHz・16bitで0.25秒分を2回。
+      hospital.sendBinary(Buffer.alloc(8000));
+      hospital.sendBinary(Buffer.alloc(8000));
+      await vi.waitFor(() => expect(stream().written).toHaveLength(2));
+      stream().finalOnEnd = '架空の受付の発言です';
+      hospital.send({ type: 'hospital_speech_end' });
+      await patient.waitFor('suggestions');
+
+      hospital.send({ type: 'hospital_speaking_start' });
+      await hospital.waitFor('hospital_speaking_start', 2);
+      hospital.send({ type: 'hospital_speech_end' });
+      await hospital.waitFor('transcript_empty');
+
+      expect(settledLogs()).toMatchObject([
+        { audioMs: 500, recognized: true },
+        { audioMs: 0, recognized: false },
+      ]);
+      const allLogs = [...logSpy.mock.calls, ...warnSpy.mock.calls]
+        .map((args: unknown[]) => String(args[0]))
+        .join('\n');
+      expect(allLogs).not.toContain('架空の受付の発言です');
+    });
+
     it('閉じた後の音声認識エラーでプロセスを落とさない', async () => {
       const harness = await start(null);
       const { hospital, stream } = harness;
