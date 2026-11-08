@@ -38,15 +38,43 @@ interface SpeechResult {
   results: { alternatives: { transcript: string }[]; isFinal?: boolean }[];
 }
 
-/** 音声認識ストリームのうち、ここで使う部分。 */
+/**
+ * 音声認識ストリームのうち、ここで使う部分。
+ * 同時録音の枠（limitConcurrentStreams）も同じストリームにリスナーを付けるので、外すのは自分が付けたものだけにする。
+ */
 export interface RecognizeStream {
   writable: boolean;
   write(chunk: Buffer): unknown;
   end(): unknown;
+  /**
+   * 結果を待たずに打ち切る。SDKのストリームは打ち切ると 'close' を出し、録音の枠が返る。
+   * 持たないストリーム（テストの偽物など）は end() で閉じる。
+   */
+  destroy?(): unknown;
   on(event: 'data', listener: (data: SpeechResult) => void): this;
   on(event: 'error', listener: (error: Error) => void): this;
   on(event: 'end', listener: () => void): this;
-  removeAllListeners(event: string): this;
+  off(event: 'data', listener: (data: SpeechResult) => void): this;
+  off(event: 'error', listener: (error: Error) => void): this;
+  off(event: 'end', listener: () => void): this;
+}
+
+/** 開いている認識ストリームと、この通話が付けたリスナーを外す関数。 */
+interface Recognition {
+  stream: RecognizeStream;
+  detach(): void;
+}
+
+/** 閉じた後のエラーで EventEmitter が例外を投げないよう、外した代わりに残すリスナー。 */
+const ignoreStreamError = () => {};
+
+/** 結果を使わないストリームを閉じる。待たずに打ち切り、録音の枠とSTTの接続をすぐに返す。 */
+function abandonStream(stream: RecognizeStream): void {
+  if (stream.destroy) {
+    stream.destroy();
+  } else {
+    stream.end();
+  }
 }
 
 /**
@@ -86,7 +114,10 @@ class SpeechCapture {
   }
 }
 
-/** 送信を閉じ、残りの認識結果が届くのを待つ。エラーや時間切れでも、それまでの結果で進める。 */
+/**
+ * 送信を閉じ、残りの認識結果が届くのを待つ。エラーや時間切れでも、それまでの結果で進める。
+ * 時間内に終わらなければ打ち切る。開いたままだと、同時録音の枠とSTTの接続が残り続ける。
+ */
 function settleRecognition(stream: RecognizeStream, timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
@@ -94,16 +125,16 @@ function settleRecognition(stream: RecognizeStream, timeoutMs: number): Promise<
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      stream.removeAllListeners('data');
-      stream.removeAllListeners('error');
-      stream.removeAllListeners('end');
-      // 閉じる途中のエラーでプロセスが落ちないよう、リスナーを残す。
-      stream.on('error', () => {});
+      stream.off('end', onEnd);
+      stream.off('error', onError);
+      if (!ended) abandonStream(stream);
       resolve(ended);
     };
+    const onEnd = () => finish(true);
+    const onError = () => finish(false);
     const timer = setTimeout(() => finish(false), timeoutMs);
-    stream.on('end', () => finish(true));
-    stream.on('error', () => finish(false));
+    stream.on('end', onEnd);
+    stream.on('error', onError);
     stream.end();
   });
 }
@@ -235,7 +266,7 @@ export class CallRoom {
   private speechCapture: SpeechCapture | null = null;
   private isHospitalRecording = false;
   private isPatientSpeaking = false;
-  private recognizeStream: RecognizeStream | null = null;
+  private recognition: Recognition | null = null;
   // 新しい番が始まったら増やし、古い番の返答候補を捨てる。
   private suggestionTurn = 0;
   private isGeneratingSuggestions = false;
@@ -347,21 +378,24 @@ export class CallRoom {
   }
 
   writeAudio(chunk: Buffer): void {
-    if (this.isHospitalRecording && this.recognizeStream?.writable) {
-      this.recognizeStream.write(chunk);
+    const stream = this.recognition?.stream;
+    if (this.isHospitalRecording && stream?.writable) {
+      stream.write(chunk);
     }
   }
 
   async finishHospitalSpeech(): Promise<void> {
     const capture = this.speechCapture;
-    const stream = this.recognizeStream;
+    const recognition = this.recognition;
     this.speechCapture = null;
-    this.recognizeStream = null;
+    this.recognition = null;
     this.isHospitalRecording = false;
 
-    if (stream) {
+    if (recognition) {
       const startedAt = Date.now();
-      const ended = await settleRecognition(stream, FINAL_TRANSCRIPT_WAIT_MS);
+      const ended = await settleRecognition(recognition.stream, FINAL_TRANSCRIPT_WAIT_MS);
+      // 待ち終えた後に遅れて届く結果は、確定した発話に足さない。
+      recognition.detach();
       // 本文は残さない。待ち時間と、途中の結果のまま確定したかだけを記録する。
       logEvent('INFO', 'stt_settled', {
         callId: this.id,
@@ -601,24 +635,9 @@ export class CallRoom {
     this.closeRecognitionStream();
     // 開き直しても同じ発話の結果に積み上げる。
     const capture = this.speechCapture;
+    let stream: RecognizeStream;
     try {
-      const stream: RecognizeStream = this.deps.speech
-        .createStream()
-        .on('error', (error: Error) => {
-          // 話し終えて結果を待っているストリームの失敗は、settleRecognition が受け取る。
-          if (stream !== this.recognizeStream) return;
-          if (error.message?.includes('Long duration elapsed without audio')) {
-            if (this.isHospitalRecording && !this.openRecognitionStream()) {
-              this.abortRecording('stream_failed');
-            }
-            return;
-          }
-          logEvent('ERROR', 'stt_stream_failed', { callId: this.id, errorName: error.name });
-          this.abortRecording('stream_failed');
-        })
-        .on('data', (data: SpeechResult) => this.handleSpeechData(capture, data));
-      this.recognizeStream = stream;
-      return true;
+      stream = this.deps.speech.createStream();
     } catch (error) {
       logEvent('ERROR', 'stt_setup_failed', {
         callId: this.id,
@@ -626,17 +645,44 @@ export class CallRoom {
       });
       return false;
     }
+
+    const onError = (error: Error) => {
+      // 話し終えて結果を待っているストリームの失敗は、settleRecognition が受け取る。
+      if (stream !== this.recognition?.stream) return;
+      if (error.message?.includes('Long duration elapsed without audio')) {
+        if (this.isHospitalRecording && !this.openRecognitionStream()) {
+          this.abortRecording('stream_failed');
+        }
+        return;
+      }
+      logEvent('ERROR', 'stt_stream_failed', { callId: this.id, errorName: error.name });
+      this.abortRecording('stream_failed');
+    };
+    const onData = (data: SpeechResult) => this.handleSpeechData(capture, data);
+    let detached = false;
+    stream.on('error', onError);
+    stream.on('data', onData);
+    this.recognition = {
+      stream,
+      // 枠を返すリスナーなど、ほかの処理が付けたリスナーは残す。
+      detach: () => {
+        if (detached) return;
+        detached = true;
+        stream.off('data', onData);
+        stream.off('error', onError);
+        stream.on('error', ignoreStreamError);
+      },
+    };
+    return true;
   }
 
+  /** 録音をやめたストリームを閉じる。結果は使わないので、待たずに打ち切る。 */
   private closeRecognitionStream(): void {
-    const stream = this.recognizeStream;
-    if (!stream) return;
-    this.recognizeStream = null;
-    stream.removeAllListeners('data');
-    stream.removeAllListeners('error');
-    // 閉じる途中のエラーでプロセスが落ちないよう、リスナーを残す。
-    stream.on('error', () => {});
-    stream.end();
+    const recognition = this.recognition;
+    if (!recognition) return;
+    this.recognition = null;
+    recognition.detach();
+    abandonStream(recognition.stream);
   }
 
   /** 話し終えた後に届いた結果も発話には加える。画面へ送るのは録音中の発話だけ。 */
