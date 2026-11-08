@@ -278,6 +278,37 @@ describe('attachCallServer', () => {
       expect(models.generateContent).not.toHaveBeenCalled();
     });
 
+    // 話したのに何も表示されないと、相手は届いたと思い込む。本人の画面には出さない。
+    it('録音したのに文字にならなければ、話した相手にだけ知らせる', async () => {
+      const harness = await start(createFakeModels(() => jsonReply(THREE_SUGGESTIONS)));
+      const { patient, hospital } = harness;
+
+      hospital.send({ type: 'hospital_speaking_start' });
+      await hospital.waitFor('hospital_speaking_start');
+      hospital.send({ type: 'hospital_speech_end' });
+
+      expect(await hospital.waitFor('transcript_empty')).toEqual({ type: 'transcript_empty' });
+      await flush(harness);
+      expect(patient.all('transcript_empty')).toEqual([]);
+      expect(patient.all('transcript_final')).toEqual([]);
+    });
+
+    it('録音が失敗した後の発話の終わりでは、聞き取れなかったと知らせない', async () => {
+      const harness = await start(createFakeModels(() => jsonReply(THREE_SUGGESTIONS)));
+      const { hospital, stream } = harness;
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      hospital.send({ type: 'hospital_speaking_start' });
+      await hospital.waitFor('hospital_speaking_start');
+      stream().emit('error', new Error('scripted failure'));
+      await hospital.waitFor('hospital_recording_failed');
+      hospital.send({ type: 'hospital_speech_end' });
+      await hospital.waitFor('hospital_speaking_stop', 2);
+      await flush(harness);
+
+      expect(hospital.all('transcript_empty')).toEqual([]);
+    });
+
     it('リセットするとこの通話の両方に伝わり、記録が残らない', async () => {
       const models = createFakeModels(() => jsonReply(EMPTY_APPOINTMENT));
       const { patient, hospital } = await start(models);

@@ -411,6 +411,8 @@ export class CallRoom {
 
     if (!utterance) {
       this.broadcast({ type: 'hospital_speaking_stop' });
+      // 話したのに何も表示されないと、相手は届いたと思い込む。録音が失敗した後の終わりの合図では知らせない。
+      if (recognition) this.sendTo('hospital', { type: 'transcript_empty' });
       return;
     }
 

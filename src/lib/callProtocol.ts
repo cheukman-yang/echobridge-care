@@ -215,6 +215,8 @@ export type ServerMessage =
   | { type: 'hospital_recording_failed'; reason: RecordingFailureReason }
   | { type: 'transcript_interim'; text: string }
   | { type: 'transcript_final'; text: string; seq: number }
+  /** 録音できたのに文字にならなかった。話した相手の席にだけ送る。 */
+  | { type: 'transcript_empty' }
   | { type: 'generating_suggestions' }
   | { type: 'suggestions'; suggestions: SuggestionItem[]; ai: AiMeta }
   | {

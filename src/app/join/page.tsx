@@ -103,9 +103,13 @@ function takeInviteFromUrl(): string | null {
   return code;
 }
 
-const RECORDING_FAILURE_LABELS: Record<RecordingFailureReason, string> = {
+/** 録音の後に出す知らせ。サーバーの失敗の理由に、文字にならなかった場合を足す。 */
+type RecordingNotice = RecordingFailureReason | 'no_speech';
+
+const RECORDING_FAILURE_LABELS: Record<RecordingNotice, string> = {
   start_failed: '録音を開始できませんでした。音声は送られていません。',
   stream_failed: '音声認識が中断しました。もう一度話してください。',
+  no_speech: '声を聞き取れませんでした。相手には何も届いていません。もう一度話してください。',
 };
 
 function describePtt(
@@ -147,7 +151,7 @@ function describeStatus(
 export default function HospitalApp() {
   const [callState, setCallState] = useState<HospitalCallState>('idle');
   const [recordingPhase, setRecordingPhaseState] = useState<RecordingPhase>('idle');
-  const [recordingFailure, setRecordingFailure] = useState<RecordingFailureReason | null>(null);
+  const [recordingFailure, setRecordingFailure] = useState<RecordingNotice | null>(null);
   const [speechStatus, setSpeechStatus] = useState<SpeechStatus | null>(null);
   const [isPatientSpeaking, setIsPatientSpeaking] = useState(false);
   const [peerConnected, setPeerConnected] = useState(true);
@@ -522,6 +526,9 @@ export default function HospitalApp() {
     } else if (data.type === 'transcript_final') {
       setLiveText('');
       addCaption({ id: String(data.seq), who: 'me', text: data.text, seq: data.seq });
+    } else if (data.type === 'transcript_empty') {
+      // 次の録音を始めていれば、もう話し直しているので出さない。録音も止めない。
+      if (recordingPhaseRef.current === 'idle') setRecordingFailure('no_speech');
     } else if (data.type === 'hospital_recording_failed') {
       setRecordingFailure(data.reason);
       releaseMic();

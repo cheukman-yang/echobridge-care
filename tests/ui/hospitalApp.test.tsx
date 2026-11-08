@@ -8,6 +8,7 @@ import { FakeWebSocket } from '../helpers/fakeWebSocket';
 
 const NOT_SENT_NOTICE = '録音を開始できませんでした。音声は送られていません。';
 const INTERRUPTED_NOTICE = '音声認識が中断しました。もう一度話してください。';
+const NO_SPEECH_NOTICE = '声を聞き取れませんでした。相手には何も届いていません。もう一度話してください。';
 const RECORDING_LABEL = '録音中です。話し終えたら離してください';
 const PREPARING_LABEL = '録音を準備しています。まだ話さないでください';
 
@@ -317,6 +318,32 @@ describe('病院の録音', () => {
       receive(callJoined('hospital', {}));
 
       expect(failureNotice()).toBe(INTERRUPTED_NOTICE);
+    });
+
+    it('話したのに文字にならなかったら、届いていないと伝える', async () => {
+      await renderRecordingCall();
+      holdLongEnough();
+      fireEvent.pointerUp(ptt());
+
+      receive({ type: 'hospital_speaking_stop' });
+      receive({ type: 'transcript_empty' });
+
+      expect(failureNotice()).toBe(NO_SPEECH_NOTICE);
+      expect(pttLabel()).toBe('押すと録音を始めます');
+    });
+
+    it('次の録音を始めた後に届いた「聞き取れなかった」は出さず、録音も止めない', async () => {
+      await renderRecordingCall();
+      holdLongEnough();
+      fireEvent.pointerUp(ptt());
+      fireEvent.pointerDown(ptt());
+      await serverAccepts();
+
+      receive({ type: 'transcript_empty' });
+
+      expect(failureNotice()).toBeNull();
+      expect(track.stop).toHaveBeenCalledTimes(1);
+      expect(pttLabel()).toBe(RECORDING_LABEL);
     });
 
     it('マイクを使えなければ録音を取り消す', async () => {
