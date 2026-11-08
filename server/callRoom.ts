@@ -1,8 +1,10 @@
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   CALL_ROLES,
+  DEFAULT_SPEECH_VOICE,
   INVITE_CODE_ALPHABET,
   INVITE_CODE_LENGTH,
+  MAX_REPLAYS_PER_TURN,
   TYPING_NOTICE_TEXT,
   buildGreeting,
   keepsSuggestions,
@@ -18,22 +20,41 @@ import type {
   ChatTurn,
   RecordingFailureReason,
   ServerMessage,
+  SpeechEngine,
   SpeechOrigin,
   SpeechStatus,
+  SpeechVoice,
   PlaybackStatus,
   SuggestionSet,
 } from '../src/lib/callProtocol';
 import { DEFAULT_CALL_PURPOSE } from '../src/lib/callPurpose';
 import type { CallPurpose } from '../src/lib/callPurpose';
 import type { AiAssistant } from './geminiService';
+import { DISABLED_SYNTHESIZER } from './speechSynthesizer';
+import type { SpeechSynthesizer, SynthesisOutcome } from './speechSynthesizer';
 
 /** 発信のときに本人が決める、通話の前提。 */
 export interface CallContext {
   purpose: CallPurpose;
   partnerName: string;
+  /** 読み上げの声。省くと既定の声。 */
+  voice?: SpeechVoice;
 }
 
 export const DEFAULT_CALL_CONTEXT: CallContext = { purpose: DEFAULT_CALL_PURPOSE, partnerName: '' };
+
+/** 1つの発言の音声を作り直せる回数（最初の1回を含む）。 */
+const MAX_SYNTHESIS_ATTEMPTS = 2;
+
+/** 通話の中で持っておく音声の数。再接続した相手に送り直すために使い、古いものから捨てる。 */
+const MAX_STORED_AUDIO = 40;
+
+/** 1つの発言の音声。結果が出るまでは outcome がない。 */
+interface TurnAudio {
+  promise: Promise<SynthesisOutcome>;
+  outcome?: SynthesisOutcome;
+  attempts: number;
+}
 
 interface SpeechResult {
   results: { alternatives: { transcript: string }[]; isFinal?: boolean }[];
@@ -172,6 +193,8 @@ export interface CallLimits {
   maxMessagesPerMinute: number;
   /** 1通話で依頼できるAI整形の回数。 */
   maxPolishRequestsPerCall: number;
+  /** 1通話でサーバーが音声にする文字数。超えた分は相手の端末の声で読む。 */
+  maxSpeechCharsPerCall: number;
   /** 切れた接続を見つけるPingの間隔。 */
   heartbeatIntervalMs: number;
   /** 通話に入っていない接続を閉じるまでの時間。判定はPingの間隔ごと。 */
@@ -187,6 +210,7 @@ export const DEFAULT_CALL_LIMITS: CallLimits = {
   maxConnections: 200,
   maxMessagesPerMinute: 120,
   maxPolishRequestsPerCall: 100,
+  maxSpeechCharsPerCall: 5_000,
   heartbeatIntervalMs: 30 * 1000,
   idleConnectionMs: 10 * 60 * 1000,
 };
@@ -195,6 +219,8 @@ export interface CallRoomDeps {
   ai: AiAssistant;
   speech: SpeechRecognizer;
   limits: CallLimits;
+  /** 本人の文の音声合成。省くと使わない（相手の端末の声で読む）。 */
+  tts?: SpeechSynthesizer;
 }
 
 type TimerName = 'invite' | 'lifetime' | 'abandon' | 'retention';
@@ -275,6 +301,13 @@ export class CallRoom {
   private appointment: AppointmentResult | null = null;
   private polishRequests = 0;
   private isClosed = false;
+  private readonly voice: SpeechVoice;
+  // 発言の番号ごとの音声。相手が再接続したら、ここから送り直す。通話を閉じたら消す。
+  private speechAudio = new Map<number, TurnAudio>();
+  // あいさつは本人が発信前に確認した文なので、相手が着信画面を開いた時点で作り始める。
+  private greetingAudio: Promise<SynthesisOutcome> | null = null;
+  private synthesizedChars = 0;
+  private replays = new Map<number, number>();
 
   constructor(
     private readonly deps: CallRoomDeps,
@@ -286,6 +319,7 @@ export class CallRoom {
     this.intent = intent;
     this.purpose = context.purpose;
     this.partnerName = context.partnerName;
+    this.voice = context.voice ?? DEFAULT_SPEECH_VOICE;
     this.invite = { code: generateInviteCode(), expiresAt: Date.now() + inviteTtlMs };
     this.setTimer('invite', inviteTtlMs, () => this.close('invite_expired'));
     this.setTimer('lifetime', maxCallDurationMs, () => this.close('time_limit'));
@@ -330,6 +364,7 @@ export class CallRoom {
       snapshot: this.snapshotFor(role),
     });
     if (!previous) this.sendTo(otherRole(role), { type: 'peer_status', connected: true });
+    if (role === 'hospital' && this.phase === 'ringing') this.prepareGreetingAudio();
     this.refreshAbandonTimer();
     logEvent('INFO', 'call_joined', { callId: this.id, role });
   }
@@ -356,6 +391,8 @@ export class CallRoom {
     const text = buildGreeting(this.intent, this.purpose);
     const seq = this.addTurn({ sender: '患者', text, origin: 'greeting' });
     this.broadcast({ type: 'answer_call', text, seq });
+    this.startSynthesis(seq, text, this.greetingAudio ?? undefined);
+    this.greetingAudio = null;
     // 応答の前に患者が切断していても、通話が始まったので片付けの対象ではなくなる。
     this.refreshAbandonTimer();
   }
@@ -446,19 +483,59 @@ export class CallRoom {
     const seq = this.addTurn({ sender: '患者', text, origin });
     logEvent('INFO', 'patient_speech', { callId: this.id, origin, length: text.length });
     this.broadcast({ type: 'patient_speech', text, origin, seq });
+    // 文は先に届け、音声は後から送る。相手の画面は番号の順に待って読むので、順序は崩れない。
+    this.startSynthesis(seq, text);
+  }
+
+  /**
+   * 相手の画面が、まだ受け取っていない音声を求めた（再接続・再読み込みの後など）。
+   * 作り終えた音声があれば送り直し、失敗していれば一度だけ作り直す。結果は相手の席にだけ返す。
+   */
+  requestSpeechAudio(seq: number): void {
+    const turn = this.patientTurn(seq);
+    if (!turn) return;
+    const entry = this.speechAudio.get(seq);
+    const outcome = entry?.outcome;
+    const canRetry = !entry || (outcome !== undefined && !outcome.ok && outcome.reason !== 'quota');
+    if (entry && (!canRetry || entry.attempts >= MAX_SYNTHESIS_ATTEMPTS)) {
+      void entry.promise.then((result) => {
+        if (!this.isClosed && this.speechAudio.get(seq) === entry) this.sendAudioToHospital(seq, result);
+      });
+      return;
+    }
+    this.startSynthesis(seq, turn.text, undefined, (entry?.attempts ?? 0) + 1);
+  }
+
+  /**
+   * 本人が、自分の文を相手の端末でもう一度読み上げるよう頼んだ。新しい発言にはしない。
+   * 回数に上限を設け、押し続けても相手の端末で鳴り続けないようにする。
+   */
+  replaySpeech(seq: number): boolean {
+    const turn = this.patientTurn(seq);
+    const count = this.replays.get(seq) ?? 0;
+    if (!turn || count >= MAX_REPLAYS_PER_TURN) return false;
+    this.replays.set(seq, count + 1);
+    turn.playback = undefined;
+    turn.playbackEngine = undefined;
+    this.sendTo('hospital', { type: 'speech_replay', seq });
+    return true;
   }
 
   /**
    * 相手の端末が読み上げた結果を本人に知らせる。本人の発言でない番号は無視する。
    * 読み終えた後に始まりの報告が遅れて届いても、終わった状態を戻さない。
    */
-  reportPlayback(seq: number, status: PlaybackStatus): void {
-    const turn = this.turns.find((candidate) => candidate.seq === seq);
-    if (!turn || turn.sender !== '患者') return;
-    if (status === 'started' && turn.playback !== undefined) return;
+  reportPlayback(seq: number, status: PlaybackStatus, engine?: SpeechEngine): void {
+    const turn = this.patientTurn(seq);
+    if (!turn) return;
+    const isFinal = turn.playback === 'ended' || turn.playback === 'failed';
+    if ((status === 'started' || status === 'blocked') && isFinal) return;
     turn.playback = status;
-    this.sendTo('patient', { type: 'speech_playback', seq, status });
-    if (status === 'failed') logEvent('WARNING', 'playback_failed', { callId: this.id });
+    turn.playbackEngine = engine;
+    this.sendTo('patient', { type: 'speech_playback', seq, status, ...(engine ? { engine } : {}) });
+    if (status === 'failed' || status === 'blocked') {
+      logEvent('WARNING', 'playback_failed', { callId: this.id, status, engine });
+    }
   }
 
   async polish(requestId: string, text: string): Promise<void> {
@@ -495,8 +572,17 @@ export class CallRoom {
     });
   }
 
+  /**
+   * 「入力中です」の自動案内。決まった文なので、作り置きの音声があれば一緒に送る。
+   * 音声を待つと、直後に送った本人の文より後に届いて順序が逆になるので、待たない。
+   */
   notifyTyping(): void {
-    this.broadcast({ type: 'patient_typing_notice', text: TYPING_NOTICE_TEXT });
+    const text = TYPING_NOTICE_TEXT;
+    const audio = this.tts.cachedAudio(text, this.voice);
+    this.sendTo('patient', { type: 'patient_typing_notice', text });
+    this.sendTo('hospital', { type: 'patient_typing_notice', text, ...(audio ?? {}) });
+    // 作り置きがなければ次のために作る。決まった文は通話ごとの上限に数えない。
+    if (!audio && this.tts.available) void this.tts.synthesize(text, this.voice);
   }
 
   setPatientSpeaking(isSpeaking: boolean): void {
@@ -556,6 +642,8 @@ export class CallRoom {
     this.speechCapture = null;
     this.suggestions = null;
     this.appointment = null;
+    this.speechAudio.clear();
+    this.greetingAudio = null;
     this.onClosed(this);
     logEvent('INFO', 'call_closed', { callId: this.id, reason });
   }
@@ -575,6 +663,76 @@ export class CallRoom {
       appointment: forPatient ? this.appointment : null,
       invite: forPatient ? this.invite : null,
     };
+  }
+
+  private get tts(): SpeechSynthesizer {
+    return this.deps.tts ?? DISABLED_SYNTHESIZER;
+  }
+
+  private patientTurn(seq: number): CallTurn | null {
+    const turn = this.turns.find((candidate) => candidate.seq === seq);
+    return turn && turn.sender === '患者' ? turn : null;
+  }
+
+  private prepareGreetingAudio(): void {
+    if (this.greetingAudio || !this.tts.available) return;
+    this.greetingAudio = this.synthesizeText(buildGreeting(this.intent, this.purpose));
+  }
+
+  /**
+   * 文を音声にする。作り置きのある決まった文は通話ごとの上限に数えない。
+   * 使えない・上限を超えたときは、待たずに失敗を返す。
+   */
+  private synthesizeText(text: string): Promise<SynthesisOutcome> {
+    const tts = this.tts;
+    if (!tts.available) return Promise.resolve({ ok: false, reason: 'unavailable' });
+    const cached = tts.cachedAudio(text, this.voice);
+    if (cached) return Promise.resolve({ ok: true, cached: true, ...cached });
+    if (this.synthesizedChars + text.length > this.deps.limits.maxSpeechCharsPerCall) {
+      logEvent('WARNING', 'tts_call_limit_reached', { callId: this.id });
+      return Promise.resolve({ ok: false, reason: 'quota' });
+    }
+    this.synthesizedChars += text.length;
+    return tts.synthesize(text, this.voice);
+  }
+
+  /** 発言の音声を作り始め、できたら相手に送り、本人に結果を知らせる。 */
+  private startSynthesis(
+    seq: number,
+    text: string,
+    existing?: Promise<SynthesisOutcome>,
+    attempts = 1,
+  ): void {
+    const entry: TurnAudio = { promise: existing ?? this.synthesizeText(text), attempts };
+    this.speechAudio.set(seq, entry);
+    while (this.speechAudio.size > MAX_STORED_AUDIO) {
+      const oldest = this.speechAudio.keys().next().value as number;
+      this.speechAudio.delete(oldest);
+    }
+    void entry.promise.then((outcome) => {
+      entry.outcome = outcome;
+      if (this.isClosed || this.speechAudio.get(seq) !== entry) return;
+      const turn = this.patientTurn(seq);
+      if (turn) {
+        turn.synthesis = outcome.ok ? 'ready' : 'failed';
+        turn.synthesisReason = outcome.ok ? undefined : outcome.reason;
+      }
+      this.sendTo('patient', {
+        type: 'speech_synthesis',
+        seq,
+        status: outcome.ok ? 'ready' : 'failed',
+        ...(outcome.ok ? {} : { reason: outcome.reason }),
+      });
+      this.sendAudioToHospital(seq, outcome);
+    });
+  }
+
+  private sendAudioToHospital(seq: number, outcome: SynthesisOutcome): void {
+    if (outcome.ok) {
+      this.sendTo('hospital', { type: 'speech_audio', seq, audio: outcome.audio, mimeType: outcome.mimeType });
+    } else {
+      this.sendTo('hospital', { type: 'speech_audio_failed', seq, reason: outcome.reason });
+    }
   }
 
   private sendTo(role: CallRole, message: ServerMessage): void {

@@ -39,6 +39,21 @@ class FakeAudioContext {
   }
 }
 
+/**
+ * jsdom の audio 要素は再生できない（未実装の警告が出る）。この画面は応答などの操作の中で audio 要素の再生を許可させるので、
+ * 何も鳴らさない代わりを置く。サーバーの音声の再生は tests/ui/partnerSpeech.test.tsx で確かめる。
+ */
+class SilentAudio {
+  paused = true;
+  src = '';
+  preload = '';
+  setAttribute() {}
+  play() {
+    return Promise.resolve();
+  }
+  pause() {}
+}
+
 function socket() {
   return FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
 }
@@ -100,6 +115,7 @@ describe('病院の録音', () => {
     window.history.replaceState(null, '', '/hospital');
     vi.stubGlobal('WebSocket', FakeWebSocket);
     vi.stubGlobal('AudioContext', FakeAudioContext);
+    vi.stubGlobal('Audio', SilentAudio);
     vi.stubGlobal('alert', vi.fn());
 
     track = { stop: vi.fn() };
@@ -430,11 +446,15 @@ describe('病院役の参加と読み上げ', () => {
     window.history.replaceState(null, '', '/hospital');
     vi.stubGlobal('WebSocket', FakeWebSocket);
     vi.stubGlobal('AudioContext', FakeAudioContext);
+    vi.stubGlobal('Audio', SilentAudio);
     vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance);
     vi.stubGlobal('speechSynthesis', {
       speaking: false,
       cancel: vi.fn(),
-      speak: vi.fn((utterance: FakeUtterance) => spoken.push(utterance)),
+      // 操作の中で読み上げを許可させる空の発話（iPhone向け）は、読み上げた文に数えない。
+      speak: vi.fn((utterance: FakeUtterance) => {
+        if (utterance.text) spoken.push(utterance);
+      }),
     });
   });
 
@@ -799,11 +819,15 @@ describe('相手の画面の字幕と読み上げの報告', () => {
     window.history.replaceState(null, '', '/join');
     vi.stubGlobal('WebSocket', FakeWebSocket);
     vi.stubGlobal('AudioContext', FakeAudioContext);
+    vi.stubGlobal('Audio', SilentAudio);
     vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance);
     vi.stubGlobal('speechSynthesis', {
       speaking: false,
       cancel: vi.fn(),
-      speak: vi.fn((utterance: FakeUtterance) => spoken.push(utterance)),
+      // 操作の中で読み上げを許可させる空の発話（iPhone向け）は、読み上げた文に数えない。
+      speak: vi.fn((utterance: FakeUtterance) => {
+        if (utterance.text) spoken.push(utterance);
+      }),
     });
     const track = { stop: vi.fn() };
     Object.defineProperty(navigator, 'mediaDevices', {
@@ -874,8 +898,8 @@ describe('相手の画面の字幕と読み上げの報告', () => {
     act(() => current().onend?.());
 
     expect(playbackReports()).toEqual([
-      { type: 'speech_playback', seq: 1, status: 'started' },
-      { type: 'speech_playback', seq: 1, status: 'ended' },
+      { type: 'speech_playback', seq: 1, status: 'started', engine: 'device' },
+      { type: 'speech_playback', seq: 1, status: 'ended', engine: 'device' },
     ]);
   });
 
@@ -884,7 +908,7 @@ describe('相手の画面の字幕と読み上げの報告', () => {
 
     act(() => current().onerror?.());
 
-    expect(playbackReports()).toEqual([{ type: 'speech_playback', seq: 1, status: 'failed' }]);
+    expect(playbackReports()).toEqual([{ type: 'speech_playback', seq: 1, status: 'failed', engine: 'device' }]);
   });
 
   it('自動案内の読み上げは知らせない', () => {
@@ -897,7 +921,8 @@ describe('相手の画面の字幕と読み上げの報告', () => {
     expect(playbackReports().map(({ seq }) => seq)).toEqual([1]);
   });
 
-  it('終わりの合図が来なくても、時間がたてば次の文へ進み、結果は知らせない', () => {
+  // 始まりの合図もないまま時間が切れたら、聞こえていないとみなす。「読み上げ済み」にはしない。
+  it('終わりの合図が来なくても、時間がたてば次の文へ進み、始まっていなければ失敗と知らせる', () => {
     vi.useFakeTimers();
     answeredCall();
     receive({ type: 'patient_speech', text: '次の文', origin: 'typed', seq: 3 });
@@ -912,7 +937,7 @@ describe('相手の画面の字幕と読み上げの報告', () => {
     });
 
     expect(spoken.map(({ text }) => text)).toEqual(['あいさつの文', '次の文']);
-    expect(playbackReports()).toEqual([]);
+    expect(playbackReports()).toEqual([{ type: 'speech_playback', seq: 1, status: 'failed', engine: 'device' }]);
   });
 
   it('読み上げている間は録音を始めず、理由を表示する', () => {
@@ -1007,6 +1032,7 @@ describe('レビュー指摘: 読み上げと録音の整合、録音の操作',
     window.history.replaceState(null, '', '/join');
     vi.stubGlobal('WebSocket', FakeWebSocket);
     vi.stubGlobal('AudioContext', FakeAudioContext);
+    vi.stubGlobal('Audio', SilentAudio);
     vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance);
     cancel = vi.fn(() => {
       synthSpeaking = false;
@@ -1017,6 +1043,7 @@ describe('レビュー指摘: 読み上げと録音の整合、録音の操作',
       },
       cancel,
       speak: vi.fn((utterance: FakeUtterance) => {
+        if (!utterance.text) return;
         spoken.push(utterance);
         synthSpeaking = true;
       }),
@@ -1093,7 +1120,10 @@ describe('レビュー指摘: 読み上げと録音の整合、録音の操作',
     act(() => first.onend?.());
 
     expect(ptt().disabled).toBe(true);
-    expect(socket().sentOfType('speech_playback')).toEqual([]);
+    // 一つ目は始まりの合図がないまま時間が切れたので失敗。遅れて届いた終わりの合図では「読み上げ済み」にしない。
+    expect(socket().sentOfType('speech_playback')).toEqual([
+      { type: 'speech_playback', seq: 1, status: 'failed', engine: 'device' },
+    ]);
   });
 
   it('支援技術のクリックで録音を始め、もう一度のクリックで終える', async () => {

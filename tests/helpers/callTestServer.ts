@@ -11,6 +11,7 @@ import type {
 } from '../../server/callServer';
 import type { GeminiModels } from '../../server/geminiClient';
 import { createAiAssistant } from '../../server/geminiService';
+import type { SpeechSynthesizer } from '../../server/speechSynthesizer';
 import type { ClientMessage, ServerMessage, SpeechStatus } from '@/lib/callProtocol';
 import { createFakeRunner } from './fakeGemini';
 
@@ -173,12 +174,13 @@ export class CallTestServer {
     models: GeminiModels | null,
     createRecognizeStream: () => RecognizeStream = this.newStream,
     options?: CallServerOptions,
+    tts?: SpeechSynthesizer,
   ) {
     this.server = http.createServer();
     this.speech = new FakeSpeech(createRecognizeStream);
     this.wss = attachCallServer(
       this.server,
-      { ai: createAiAssistant(createFakeRunner(models)), speech: this.speech },
+      { ai: createAiAssistant(createFakeRunner(models)), speech: this.speech, tts },
       options,
     );
     await new Promise<void>((resolve) => this.server.listen(0, resolve));

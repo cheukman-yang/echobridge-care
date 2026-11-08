@@ -16,13 +16,21 @@
  *   GET /__mock/ai?mode=ok|fail|slow           AIを正常・失敗・時間切れにする
  *   GET /__mock/speech?status=ready|unavailable 音声認識の準備状態を変える
  *   GET /__mock/speech?fail=1                   録音中の認識を失敗させる
+ *   GET /__mock/tts?mode=off|tone|fail|slow     音声合成を切り替える（既定 off）
  *   GET /__mock/state                           今の設定を見る
+ *
+ * 音声合成（Cloud Text-to-Speech）の代わり:
+ * - off（既定）: 使えないことにする。相手の画面は端末の声で読む
+ * - tone: 文の長さに合わせた「ピー」という音（WAV）を返す。音声の受け渡し・順番・再生の報告を確かめるためのもので、声ではない
+ * - fail: 失敗を返す / slow: 相手の画面の待ち時間より遅く返す
+ * 起動時に MOCK_TTS=tone なども指定できる。
  */
 import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import type { RawData, WebSocket } from 'ws';
 import { attachCallServer, resolveAllowedOrigins } from '../server/callServer';
 import type { RecognizeStream, SpeechRecognizer } from '../server/callServer';
+import type { SpeechSynthesizer, SynthesisOutcome } from '../server/speechSynthesizer';
 import { createGeminiRunner, resolveGeminiConfig } from '../server/geminiClient';
 import type { GeminiModels } from '../server/geminiClient';
 import { createAiAssistant } from '../server/geminiService';
@@ -277,8 +285,69 @@ const models: GeminiModels = {
   },
 };
 
+type TtsMode = 'off' | 'tone' | 'fail' | 'slow';
+const TTS_MODES: readonly TtsMode[] = ['off', 'tone', 'fail', 'slow'];
+const isTtsMode = (value: unknown): value is TtsMode => TTS_MODES.includes(value as TtsMode);
+let ttsMode: TtsMode = isTtsMode(process.env.MOCK_TTS) ? process.env.MOCK_TTS : 'off';
+const ttsListeners = new Set<(available: boolean) => void>();
+/** 相手の画面が音声を待つ上限（最大17秒）より長い。 */
+const SLOW_TTS_MS = 20_000;
+
+/** 文の長さに合わせた短い音（16kHz・16bit・モノラルのWAV）。声ではない。 */
+function toneWav(chars: number): string {
+  const rate = 16_000;
+  const seconds = Math.min(6, Math.max(0.5, 0.4 + chars * 0.08));
+  const samples = Math.round(rate * seconds);
+  const buffer = Buffer.alloc(44 + samples * 2);
+  buffer.write('RIFF', 0);
+  buffer.writeUInt32LE(36 + samples * 2, 4);
+  buffer.write('WAVE', 8);
+  buffer.write('fmt ', 12);
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(rate, 24);
+  buffer.writeUInt32LE(rate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36);
+  buffer.writeUInt32LE(samples * 2, 40);
+  for (let i = 0; i < samples; i += 1) {
+    const fade = Math.min(1, i / 800, (samples - i) / 800);
+    const value = Math.sin((2 * Math.PI * 440 * i) / rate) * 0.15 * fade;
+    buffer.writeInt16LE(Math.round(value * 0x7fff), 44 + i * 2);
+  }
+  return buffer.toString('base64');
+}
+
+const tts: SpeechSynthesizer = {
+  get available() {
+    return ttsMode !== 'off';
+  },
+  onAvailabilityChange(listener) {
+    ttsListeners.add(listener);
+    return () => {
+      ttsListeners.delete(listener);
+    };
+  },
+  async synthesize(text): Promise<SynthesisOutcome> {
+    if (ttsMode === 'off') return { ok: false, reason: 'unavailable' };
+    await wait(ttsMode === 'slow' ? SLOW_TTS_MS : 300, undefined);
+    if (ttsMode === 'fail') return { ok: false, reason: 'error' };
+    return { ok: true, cached: false, audio: toneWav(text.length), mimeType: 'audio/wav' };
+  },
+  cachedAudio: () => null,
+};
+
 function state() {
-  return { ai: aiMode, speech: speechStatus, scenario, nextLine: cursor, openStreams: openStreams.size };
+  return {
+    ai: aiMode,
+    speech: speechStatus,
+    tts: ttsMode,
+    scenario,
+    nextLine: cursor,
+    openStreams: openStreams.size,
+  };
 }
 
 const server = http.createServer((request, response) => {
@@ -304,6 +373,16 @@ const server = http.createServer((request, response) => {
     send(200, state());
     return;
   }
+  if (url.pathname === '/__mock/tts') {
+    const mode = url.searchParams.get('mode');
+    if (isTtsMode(mode) && mode !== ttsMode) {
+      const wasAvailable = tts.available;
+      ttsMode = mode;
+      if (tts.available !== wasAvailable) ttsListeners.forEach((listener) => listener(tts.available));
+    }
+    send(200, state());
+    return;
+  }
   if (url.pathname === '/__mock/state') {
     send(200, state());
     return;
@@ -320,7 +399,7 @@ const config = {
 
 const wss = attachCallServer(
   server,
-  { ai: createAiAssistant(createGeminiRunner(config, models)), speech },
+  { ai: createAiAssistant(createGeminiRunner(config, models)), speech, tts },
   { allowedOrigins: resolveAllowedOrigins(process.env) },
 );
 
@@ -340,5 +419,7 @@ wss.on('connection', (ws: WebSocket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`> EchoBridge MOCK server on port ${PORT} (development only: no Gemini, no Speech-to-Text)`);
+  console.log(
+    `> EchoBridge MOCK server on port ${PORT} (development only: no Gemini, no Speech-to-Text, no Cloud TTS; mock TTS=${ttsMode})`,
+  );
 });

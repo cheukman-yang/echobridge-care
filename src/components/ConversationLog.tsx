@@ -1,5 +1,8 @@
 import { useEffect, useRef } from 'react';
-import type { PlaybackStatus, SpeechOrigin } from '@/lib/callProtocol';
+import { RotateCcw } from 'lucide-react';
+import type { SpeechOrigin } from '@/lib/callProtocol';
+import { canRequestReplay, describeDelivery } from '@/lib/speechDelivery';
+import type { DeliveryTone, SpeechDelivery } from '@/lib/speechDelivery';
 import { cx } from './ui';
 
 export type MessageOrigin = SpeechOrigin | 'greeting' | 'notice';
@@ -24,35 +27,36 @@ export const ORIGIN_LABELS: Record<MessageOrigin, string> = {
   custom_phrase: '登録した文',
 };
 
-const PLAYBACK_LABELS: Record<PlaybackStatus | 'sent', string> = {
-  sent: '送信済み',
-  started: '読み上げ中',
-  ended: '読み上げ済み',
-  failed: '相手の端末で読み上げられませんでした',
+const TONE_CLASSES: Record<DeliveryTone, string> = {
+  muted: 'text-ink-2',
+  live: 'font-bold text-voice-strong',
+  done: 'text-ink-2',
+  warning: 'font-bold text-caution',
+  danger: 'font-bold text-danger',
 };
 
 interface ConversationLogProps {
   messages: LogMessage[];
-  playback: Record<string, PlaybackStatus>;
+  /** 本人の発言ごとの、音声の作成と相手の端末での再生の状態。 */
+  delivery: Record<string, SpeechDelivery>;
+  /** サーバーで音声を作れるか。作れなければ「音声を作成中」と出さない。 */
+  ttsAvailable: boolean;
   partnerLabel: string;
   isPartnerSpeaking: boolean;
   liveText: string;
+  /** 相手の端末でもう一度読み上げてもらう。渡さなければボタンを出さない。 */
+  onReplay?: (seq: number) => void;
 }
 
 /** これ以上下から離れていたら、本人が読み返しているとみなして自動で動かさない。 */
 const STICK_TO_BOTTOM_PX = 120;
 
-function PlaybackBadge({ status }: { status: PlaybackStatus | undefined }) {
-  const key = status ?? 'sent';
+function DeliveryBadge({ delivery, ttsAvailable }: { delivery: SpeechDelivery | undefined; ttsAvailable: boolean }) {
+  const view = describeDelivery(delivery, ttsAvailable);
   return (
-    <span
-      className={cx(
-        'inline-flex items-center gap-1.5',
-        status === 'failed' ? 'font-bold text-danger' : 'text-ink-2',
-      )}
-    >
-      {status === 'started' && <span aria-hidden className="eb-live-dot size-2 rounded-full bg-voice" />}
-      {PLAYBACK_LABELS[key]}
+    <span className={cx('inline-flex items-center gap-1.5', TONE_CLASSES[view.tone])}>
+      {view.tone === 'live' && <span aria-hidden className="eb-live-dot size-2 rounded-full bg-voice" />}
+      {view.label}
     </span>
   );
 }
@@ -60,10 +64,12 @@ function PlaybackBadge({ status }: { status: PlaybackStatus | undefined }) {
 /** 通話の記録。相手の発言は左、本人の発言は右に置き、出所と読み上げの状態を添える。 */
 export function ConversationLog({
   messages,
-  playback,
+  delivery,
+  ttsAvailable,
   partnerLabel,
   isPartnerSpeaking,
   liveText,
+  onReplay,
 }: ConversationLogProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -80,6 +86,10 @@ export function ConversationLog({
   };
 
   const hasPartnerTurn = messages.some((message) => message.sender === 'hospital');
+  // 読み直しのボタンは、再生できなかった文と、最後に送った文にだけ出す。
+  const latestOwnId = messages.findLast(
+    (message) => message.sender === 'patient' && message.origin !== 'notice',
+  )?.id;
 
   return (
     <div ref={scrollerRef} onScroll={onScroll} className="h-full overflow-y-auto overscroll-contain">
@@ -114,9 +124,22 @@ export function ConversationLog({
                   {message.text}
                 </p>
                 {isMine && (
-                  <p className="px-1 text-[13px]">
-                    <PlaybackBadge status={playback[message.id]} />
-                  </p>
+                  <div className="flex flex-wrap items-center justify-end gap-x-2 px-1 text-[13px]">
+                    <DeliveryBadge delivery={delivery[message.id]} ttsAvailable={ttsAvailable} />
+                    {onReplay &&
+                      /^\d+$/.test(message.id) &&
+                      canRequestReplay(delivery[message.id]) &&
+                      (delivery[message.id]?.playback === 'failed' || message.id === latestOwnId) && (
+                        <button
+                          type="button"
+                          onClick={() => onReplay(Number(message.id))}
+                          className="inline-flex min-h-11 items-center gap-1 rounded-lg px-2 text-[13px] font-bold text-voice-strong hover:bg-voice-soft"
+                        >
+                          <RotateCcw className="size-3.5" aria-hidden />
+                          もう一度読み上げる
+                        </button>
+                      )}
+                  </div>
                 )}
               </li>
             );

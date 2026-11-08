@@ -1146,34 +1146,103 @@ describe('相手の端末での読み上げの状態', () => {
     return within(screen.getByRole('log'));
   }
 
-  it('送った直後は送信済み、相手の報告で読み上げ中、読み上げ済みに変える', () => {
+  it('送った直後は送信済み、相手の報告で読み上げ中、再生済みに変える', () => {
     const log = sentLine();
     expect(log.getAllByText('送信済み').length).toBeGreaterThan(0);
 
-    receive({ type: 'speech_playback', seq: 2, status: 'started' });
-    expect(log.getByText('読み上げ中')).toBeTruthy();
+    receive({ type: 'speech_playback', seq: 2, status: 'started', engine: 'device' });
+    expect(log.getByText('読み上げ中（相手の端末の音声）')).toBeTruthy();
 
-    receive({ type: 'speech_playback', seq: 2, status: 'ended' });
-    expect(log.getByText('読み上げ済み')).toBeTruthy();
+    receive({ type: 'speech_playback', seq: 2, status: 'ended', engine: 'device' });
+    expect(log.getByText('相手の端末で再生済み（相手の端末の音声）')).toBeTruthy();
   });
 
   it('読み上げられなかったら、本人に知らせる', () => {
     const log = sentLine();
 
-    receive({ type: 'speech_playback', seq: 2, status: 'failed' });
+    receive({ type: 'speech_playback', seq: 2, status: 'failed', engine: 'device' });
 
-    expect(log.getByText('相手の端末で読み上げられませんでした')).toBeTruthy();
+    expect(log.getByText('相手の端末で再生できませんでした。相手の字幕には表示されています')).toBeTruthy();
+  });
+
+  it('サーバーで音声を作れるときは、作成中・作成済み・再生済み（Google音声）を区別する', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+    receive({ type: 'tts_status', available: true });
+    receive(callJoined('patient', { phase: 'ringing', invite: INVITE, peerConnected: true }));
+    receive({ type: 'answer_call', text: 'お電話しております。', seq: 1 });
+    receive({ type: 'patient_speech', text: '本人の文です', origin: 'typed', seq: 2 });
+    const log = within(screen.getByRole('log'));
+    expect(log.getAllByText('音声を作成中').length).toBeGreaterThan(0);
+
+    receive({ type: 'speech_synthesis', seq: 2, status: 'ready' });
+    expect(log.getByText('音声を作成済み・相手の端末で再生待ち')).toBeTruthy();
+
+    receive({ type: 'speech_playback', seq: 2, status: 'ended', engine: 'cloud' });
+    expect(log.getByText('相手の端末で再生済み（Google音声）')).toBeTruthy();
+  });
+
+  it('音声を作れなかったら、相手の端末の声で読むことを伝える', () => {
+    const log = sentLine();
+
+    receive({ type: 'speech_synthesis', seq: 2, status: 'failed', reason: 'timeout' });
+
+    expect(log.getByText('Google音声を作れなかったため、相手の端末の音声で読み上げます')).toBeTruthy();
+  });
+
+  it('相手の端末で再生が止められたら、相手の操作待ちと伝える', () => {
+    const log = sentLine();
+
+    receive({ type: 'speech_playback', seq: 2, status: 'blocked', engine: 'cloud' });
+
+    expect(log.getByText('相手の端末で再生が止められています。相手の操作を待っています')).toBeTruthy();
+  });
+
+  it('再生できなかった文は、相手の端末でもう一度読み上げるよう頼める。新しい発言は送らない', () => {
+    const log = sentLine();
+    receive({ type: 'speech_playback', seq: 2, status: 'failed', engine: 'device' });
+
+    fireEvent.click(log.getByRole('button', { name: 'もう一度読み上げる' }));
+
+    expect(socket().sentOfType('speech_replay_request')).toEqual([{ type: 'speech_replay_request', seq: 2 }]);
+    expect(confirmedSpeech()).toEqual([]);
+    expect(log.getByText('もう一度読み上げるよう依頼しました')).toBeTruthy();
+
+    receive({ type: 'speech_playback', seq: 2, status: 'started', engine: 'cloud' });
+    expect(log.getByText('読み上げ中（Google音声）')).toBeTruthy();
+  });
+
+  it('読み直しのボタンは、再生できなかった文と最後に送った文にだけ出す', () => {
+    const log = sentLine();
+    receive({ type: 'speech_playback', seq: 1, status: 'ended', engine: 'cloud' });
+    expect(log.queryByRole('button', { name: 'もう一度読み上げる' })).toBeNull();
+
+    receive({ type: 'speech_playback', seq: 2, status: 'ended', engine: 'cloud' });
+    expect(log.getAllByRole('button', { name: 'もう一度読み上げる' })).toHaveLength(1);
+
+    receive({ type: 'peer_status', connected: false });
+    expect(log.queryByRole('button', { name: 'もう一度読み上げる' })).toBeNull();
   });
 
   it('再接続のスナップショットから状態を戻す', () => {
     renderConnectedCall();
     receive(
       callJoined('patient', {
-        turns: [{ seq: 1, sender: '患者', text: 'あいさつ', origin: 'greeting', playback: 'ended' }],
+        turns: [
+          {
+            seq: 1,
+            sender: '患者',
+            text: 'あいさつ',
+            origin: 'greeting',
+            synthesis: 'ready',
+            playback: 'ended',
+            playbackEngine: 'cloud',
+          },
+        ],
       }),
     );
 
-    expect(within(screen.getByRole('log')).getByText('読み上げ済み')).toBeTruthy();
+    expect(within(screen.getByRole('log')).getByText('相手の端末で再生済み（Google音声）')).toBeTruthy();
   });
 });
 

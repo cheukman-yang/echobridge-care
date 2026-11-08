@@ -408,7 +408,8 @@ describe('通話の分離', () => {
       await settle();
 
       expectNoCallContent(stranger);
-      expect(stranger.messages.map((message) => message.type)).toEqual(['ai_status', 'speech_status']);
+      // サーバー全体の状態（AI・音声認識・音声合成を使えるか）だけが届く。
+      expect(stranger.messages.map((message) => message.type)).toEqual(['ai_status', 'speech_status', 'tts_status']);
     });
 
     it.each([

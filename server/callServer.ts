@@ -7,9 +7,12 @@ import {
   CALL_SOCKET_PATH,
   CLOSE_CODE_IDLE,
   CLOSE_CODE_SEAT_TAKEN,
+  DEFAULT_SPEECH_VOICE,
   MAX_PATIENT_TEXT_LENGTH,
   PLAYBACK_STATUSES,
+  SPEECH_ENGINES,
   SPEECH_ORIGINS,
+  SPEECH_VOICES,
   normalizeInviteCode,
 } from '../src/lib/callProtocol';
 import {
@@ -28,6 +31,8 @@ import type {
 import { CallRegistry, DEFAULT_CALL_LIMITS, logEvent } from './callRoom';
 import type { CallLimits, CallPeer, CallRoom, SpeechRecognizer } from './callRoom';
 import type { AiAssistant } from './geminiService';
+import { DISABLED_SYNTHESIZER } from './speechSynthesizer';
+import type { SpeechSynthesizer } from './speechSynthesizer';
 
 export type { RecognizeStream, SpeechRecognizer } from './callRoom';
 
@@ -41,12 +46,16 @@ const StartCallSchema = z.object({
   purpose: z.enum(CALL_PURPOSES).default(DEFAULT_CALL_PURPOSE),
   // 長すぎる名前は切り詰めず断る。画面の入力欄にも同じ上限がある。
   partnerName: z.string().max(MAX_PARTNER_NAME_LENGTH).transform(normalizePartnerName).default(''),
+  voice: z.enum(SPEECH_VOICES).default(DEFAULT_SPEECH_VOICE),
 });
 
 const SpeechPlaybackSchema = z.object({
   seq: z.number().int().positive(),
   status: z.enum(PLAYBACK_STATUSES),
+  engine: z.enum(SPEECH_ENGINES).optional(),
 });
+
+const TurnSeqSchema = z.object({ seq: z.number().int().positive() });
 
 const JoinCallSchema = z.union([
   z.object({ inviteCode: z.string().min(1).max(64) }),
@@ -84,6 +93,9 @@ const MESSAGE_RULES: Record<
   hospital_speech_end: { roles: ['hospital'], phases: ['connected'] },
   // 終了の直前に読み始めた文の結果も、本人の終了画面に反映する。
   speech_playback: { roles: ['hospital'], phases: ['connected', 'ending', 'ended'] },
+  // 終了の直前に送られた文も、相手の端末で最後まで読めるようにする。
+  speech_audio_request: { roles: ['hospital'], phases: ['connected', 'ending', 'ended'] },
+  speech_replay_request: { roles: ['patient'], phases: ['connected'] },
   patient_typing_notice: { roles: ['patient'], phases: ['connected'] },
   patient_polish_request: { roles: ['patient'], phases: ['connected'] },
   patient_confirmed_speech: { roles: ['patient'], phases: ['connected'] },
@@ -144,6 +156,8 @@ interface Connection extends CallPeer {
 export interface CallServerDeps {
   ai: AiAssistant;
   speech: SpeechRecognizer;
+  /** 本人の文の音声合成。省くと使わず、相手の端末の声で読む。 */
+  tts?: SpeechSynthesizer;
 }
 
 export interface CallServerOptions {
@@ -164,11 +178,12 @@ export function attachCallServer(
   options: CallServerOptions = {},
 ): WebSocketServer {
   const { ai, speech } = deps;
+  const tts = deps.tts ?? DISABLED_SYNTHESIZER;
   const limits: CallLimits = { ...DEFAULT_CALL_LIMITS, ...options.limits };
   const allowedOrigins = options.allowedOrigins ?? [];
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD_BYTES });
-  const calls = new CallRegistry({ ai, speech, limits });
+  const calls = new CallRegistry({ ai, speech, limits, tts });
   const connections = new Map<WebSocket, Connection>();
 
   const sendTo = (client: WebSocket, message: ServerMessage) => {
@@ -208,6 +223,12 @@ export function attachCallServer(
     wss.clients.forEach((client) => sendTo(client, { type: 'speech_status', status }));
   });
 
+  // 音声合成を使えるかも同じく全体の情報。相手の画面は、使えないなら音声を待たずに端末の声で読む。
+  const stopWatchingTts = tts.onAvailabilityChange((available) => {
+    logEvent('INFO', 'tts_status', { available });
+    wss.clients.forEach((client) => sendTo(client, { type: 'tts_status', available }));
+  });
+
   // 通信が途切れてもサーバーからは接続中に見えることがあるので、Pingの応答で確かめる。
   const heartbeat = setInterval(() => {
     const now = Date.now();
@@ -229,6 +250,7 @@ export function attachCallServer(
 
   wss.once('close', () => {
     stopWatchingSpeech();
+    stopWatchingTts();
     clearInterval(heartbeat);
     server.off('upgrade', onUpgrade);
     calls.closeAll('server_closing');
@@ -254,6 +276,7 @@ export function attachCallServer(
 
     sendTo(ws, { type: 'ai_status', ...ai.status });
     sendTo(ws, { type: 'speech_status', status: speech.status });
+    sendTo(ws, { type: 'tts_status', available: tts.available });
 
     const reject = (code: CallErrorCode) => sendTo(ws, { type: 'call_error', code });
 
@@ -271,8 +294,8 @@ export function attachCallServer(
         reject('invalid_message');
         return;
       }
-      const { intent, purpose, partnerName } = parsed.data;
-      const room = calls.create(intent, { purpose, partnerName });
+      const { intent, purpose, partnerName, voice } = parsed.data;
+      const room = calls.create(intent, { purpose, partnerName, voice });
       if (!room) {
         logEvent('WARNING', 'call_capacity_reached', { activeCalls: calls.activeCalls });
         reject('server_busy');
@@ -347,8 +370,20 @@ export function attachCallServer(
           break;
         case 'speech_playback': {
           const parsed = SpeechPlaybackSchema.safeParse(data);
-          if (parsed.success) room.reportPlayback(parsed.data.seq, parsed.data.status);
+          if (parsed.success) room.reportPlayback(parsed.data.seq, parsed.data.status, parsed.data.engine);
           else reject('invalid_message');
+          break;
+        }
+        case 'speech_audio_request': {
+          const parsed = TurnSeqSchema.safeParse(data);
+          if (parsed.success) room.requestSpeechAudio(parsed.data.seq);
+          else reject('invalid_message');
+          break;
+        }
+        case 'speech_replay_request': {
+          const parsed = TurnSeqSchema.safeParse(data);
+          if (!parsed.success) reject('invalid_message');
+          else if (!room.replaySpeech(parsed.data.seq)) reject('not_allowed');
           break;
         }
         case 'patient_typing_notice':

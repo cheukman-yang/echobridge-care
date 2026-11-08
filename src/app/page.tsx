@@ -30,12 +30,13 @@ import type {
   CallPhase,
   CallSnapshot,
   CallTurn,
-  PlaybackStatus,
   ServerMessage,
   SpeechOrigin,
   SpeechStatus,
   SuggestionItem,
 } from '@/lib/callProtocol';
+import { deliveryFromTurns } from '@/lib/speechDelivery';
+import type { SpeechDelivery } from '@/lib/speechDelivery';
 import { CALL_PURPOSE_PROFILES, DEFAULT_CALL_PURPOSE } from '@/lib/callPurpose';
 import type { CallPurpose } from '@/lib/callPurpose';
 import { INITIAL_COMPOSER, composerReducer, resolveConfirmedSpeech } from '@/lib/composer';
@@ -86,19 +87,15 @@ function speakerLabel(message: ChatMessage, partnerLabel: string): string {
   return message.origin ? `あなた（${ORIGIN_LABELS[message.origin]}）` : 'あなた';
 }
 
-function playbackFromTurns(turns: CallTurn[]): Record<string, PlaybackStatus> {
-  const entries = turns.flatMap((turn) => (turn.playback ? [[String(turn.seq), turn.playback]] : []));
-  return Object.fromEntries(entries);
-}
-
 export default function PatientApp() {
   const [callState, setCallState] = useState<PatientCallState>('idle');
   const [intent, setIntent] = useState('');
   const [purpose, setPurpose] = useState<CallPurpose>(DEFAULT_CALL_PURPOSE);
   const [partnerName, setPartnerName] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  // 相手の端末での読み上げの状態。発言のidごとに持ち、発言の表示より先に届いても失わない。
-  const [playback, setPlayback] = useState<Record<string, PlaybackStatus>>({});
+  // 音声の作成と、相手の端末での再生の状態。発言のidごとに持ち、発言の表示より先に届いても失わない。
+  const [delivery, setDelivery] = useState<Record<string, SpeechDelivery>>({});
+  const [ttsAvailable, setTtsAvailable] = useState(false);
   const [patientInput, setPatientInput] = useState('');
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
 
@@ -140,6 +137,11 @@ export default function PatientApp() {
     setMessages((prev) => [...prev, turnToMessage(turn)]);
   }, []);
 
+  /** 発言の届き方を更新する。音声の作成と再生の報告は別々に届くので、項目ごとに重ねる。 */
+  const updateDelivery = useCallback((seq: number, patch: SpeechDelivery) => {
+    setDelivery((prev) => ({ ...prev, [String(seq)]: { ...prev[String(seq)], ...patch } }));
+  }, []);
+
   const setTypingNoticeActive = useCallback((active: boolean) => {
     typingNoticeActiveRef.current = active;
     setIsTypingNoticeActive(active);
@@ -175,7 +177,7 @@ export default function PatientApp() {
     clearIdleTimer();
     setCallState('idle');
     setMessages([]);
-    setPlayback({});
+    setDelivery({});
     setSuggestions([]);
     setSuggestionsAi(null);
     setIntent('');
@@ -202,7 +204,7 @@ export default function PatientApp() {
     setPurpose(snapshot.purpose);
     setPartnerName(snapshot.partnerName);
     setMessages(snapshot.turns.map((turn) => ({ ...turnToMessage(turn), restored: true })));
-    setPlayback(playbackFromTurns(snapshot.turns));
+    setDelivery(deliveryFromTurns(snapshot.turns));
     setSuggestions(snapshot.suggestions?.suggestions ?? []);
     setSuggestionsAi(snapshot.suggestions?.ai ?? null);
     setIsGenerating(snapshot.isGeneratingSuggestions);
@@ -251,7 +253,7 @@ export default function PatientApp() {
       setCallState('connected');
       setInvite(null);
       setMessages([turnToMessage({ sender: '患者', text: data.text, origin: 'greeting', seq: data.seq })]);
-      setPlayback({});
+      setDelivery({});
     } else if (data.type === 'hospital_speaking_start') {
       clearIdleTimer();
       setIsHospitalSpeaking(true);
@@ -290,8 +292,12 @@ export default function PatientApp() {
       } else {
         appendTurn({ sender: '患者', text: data.text, origin: data.origin, seq: data.seq });
       }
+    } else if (data.type === 'tts_status') {
+      setTtsAvailable(data.available);
+    } else if (data.type === 'speech_synthesis') {
+      updateDelivery(data.seq, { synthesis: data.status, synthesisReason: data.reason });
     } else if (data.type === 'speech_playback') {
-      setPlayback((prev) => ({ ...prev, [String(data.seq)]: data.status }));
+      updateDelivery(data.seq, { playback: data.status, engine: data.engine, replayRequested: false });
     } else if (data.type === 'call_ending') {
       setCallState('analyzing');
       clearIdleTimer();
@@ -302,7 +308,7 @@ export default function PatientApp() {
       setCallState('summary');
       clearIdleTimer();
     }
-  }, [appendTurn, applySnapshot, channel, clearIdleTimer, resetLocalCall, triggerIdleTimer]);
+  }, [appendTurn, applySnapshot, channel, clearIdleTimer, resetLocalCall, triggerIdleTimer, updateDelivery]);
 
   const isConnected = useCallSocket(channel, {
     onMessage: handleServerMessage,
@@ -352,6 +358,12 @@ export default function PatientApp() {
     }
     setCallNotice(null);
     setCallState('ringing');
+  };
+
+  /** 送った文を、相手の端末でもう一度読み上げてもらう。新しい発言にはしない。 */
+  const handleReplay = (seq: number) => {
+    if (!channel.send({ type: 'speech_replay_request', seq })) return;
+    updateDelivery(seq, { playback: undefined, engine: undefined, replayRequested: true });
   };
 
   /** 本人が確定した文を送る唯一の経路。textは書き換えずにそのまま渡す。 */
@@ -575,7 +587,9 @@ export default function PatientApp() {
             <section aria-label="会話" className="min-h-0 flex-1 lg:border-r lg:border-line">
               <ConversationLog
                 messages={messages}
-                playback={playback}
+                delivery={delivery}
+                ttsAvailable={ttsAvailable}
+                onReplay={peerConnected && isConnected ? handleReplay : undefined}
                 partnerLabel={partnerLabel}
                 isPartnerSpeaking={isHospitalSpeaking}
                 liveText={liveHospitalText}

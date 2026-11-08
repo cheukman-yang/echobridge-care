@@ -107,10 +107,52 @@ export function keepsSuggestions(origin: SpeechOrigin): boolean {
 /**
  * 相手の端末での読み上げの状態。相手の画面が報告する。
  * 届いたことと、相手が聞けたことは別なので、本人の画面で区別して見せる。
+ * - blocked: ブラウザが自動再生を止めた。相手が画面のボタンを押すと流れる
+ * - failed: 再生できなかった、または再生が始まったことを確かめられなかった
  */
-export const PLAYBACK_STATUSES = ['started', 'ended', 'failed'] as const;
+export const PLAYBACK_STATUSES = ['started', 'ended', 'failed', 'blocked'] as const;
 
 export type PlaybackStatus = (typeof PLAYBACK_STATUSES)[number];
+
+/**
+ * 相手の端末で鳴らした声の出どころ。
+ * - cloud: サーバーで合成した音声（Cloud Text-to-Speech）
+ * - device: 相手の端末のブラウザの読み上げ（speechSynthesis）
+ */
+export const SPEECH_ENGINES = ['cloud', 'device'] as const;
+
+export type SpeechEngine = (typeof SPEECH_ENGINES)[number];
+
+/** 本人が発信のときに選ぶ読み上げの声。サーバーが実際の声の名前に置き換える。 */
+export const SPEECH_VOICES = ['female', 'male'] as const;
+
+export type SpeechVoice = (typeof SPEECH_VOICES)[number];
+
+export const DEFAULT_SPEECH_VOICE: SpeechVoice = 'female';
+
+export function isSpeechVoice(value: unknown): value is SpeechVoice {
+  return typeof value === 'string' && (SPEECH_VOICES as readonly string[]).includes(value);
+}
+
+/**
+ * サーバーで音声を作れなかった理由。作れなかった文は、相手の端末の声で読む。
+ * - unavailable: 音声合成を使えない（認証・APIの無効・権限・開発用のモック）
+ * - timeout: 時間内に返らなかった
+ * - quota: 1通話または1日の文字数の上限に達した
+ * - error: そのほかの失敗
+ */
+export type SynthesisFailureReason = 'unavailable' | 'timeout' | 'quota' | 'error';
+
+export type SynthesisStatus = 'ready' | 'failed';
+
+/** サーバーで合成した音声。base64のまま再生する。 */
+export interface SpeechAudio {
+  audio: string;
+  mimeType: string;
+}
+
+/** 本人が同じ文を相手の端末で読み直してもらえる回数（1文あたり）。 */
+export const MAX_REPLAYS_PER_TURN = 3;
 
 export type AppointmentField =
   | 'title'
@@ -190,6 +232,11 @@ export interface CallTurn extends ChatTurn {
   origin?: SpeechOrigin | 'greeting';
   /** 本人の発言だけにある。相手の端末から報告がまだなければ undefined。 */
   playback?: PlaybackStatus;
+  /** 相手の端末で鳴らした声の出どころ。playback と一緒に届く。 */
+  playbackEngine?: SpeechEngine;
+  /** 本人の発言だけにある。サーバーでの音声の合成の結果。まだなら undefined。 */
+  synthesis?: SynthesisStatus;
+  synthesisReason?: SynthesisFailureReason;
 }
 
 export interface CallInvite {
@@ -282,22 +329,40 @@ export type ServerMessage =
       ai: AiMeta;
     }
   | { type: 'patient_speech'; text: string; origin: SpeechOrigin; seq: number }
-  | { type: 'speech_playback'; seq: number; status: PlaybackStatus }
-  | { type: 'patient_typing_notice'; text: string }
+  | { type: 'speech_playback'; seq: number; status: PlaybackStatus; engine?: SpeechEngine }
+  /**
+   * サーバーで音声を合成できるか。サーバー全体の情報で、通話の内容を含まない。
+   * 使えないと分かっていれば、相手の画面は音声を待たずに端末の声で読む。
+   */
+  | { type: 'tts_status'; available: boolean }
+  /** 本人の発言の音声。相手の席にだけ送る。文は先に patient_speech で届いている。 */
+  | ({ type: 'speech_audio'; seq: number } & SpeechAudio)
+  /** 本人の発言の音声を作れなかった。相手の席にだけ送る。相手は端末の声で読む。 */
+  | { type: 'speech_audio_failed'; seq: number; reason: SynthesisFailureReason }
+  /** 音声の合成の結果。本人の席にだけ送る。相手が聞けたかどうかは speech_playback で分かる。 */
+  | { type: 'speech_synthesis'; seq: number; status: SynthesisStatus; reason?: SynthesisFailureReason }
+  /** 本人が同じ文をもう一度読み上げるよう頼んだ。相手の席にだけ送る。 */
+  | { type: 'speech_replay'; seq: number }
+  /** 相手の席には、合成済みの音声があれば一緒に送る。 */
+  | ({ type: 'patient_typing_notice'; text: string } & Partial<SpeechAudio>)
   | { type: 'patient_speaking_status'; isSpeaking: boolean }
   | { type: 'call_ending' }
   | { type: 'end_call'; appointment: AppointmentDraft; ai: AiMeta };
 
 /** ブラウザからサーバーへ送るメッセージ。席のない接続が送れるのは start_call と join_call だけ。 */
 export type ClientMessage =
-  | { type: 'start_call'; intent: string; purpose?: CallPurpose; partnerName?: string }
+  | { type: 'start_call'; intent: string; purpose?: CallPurpose; partnerName?: string; voice?: SpeechVoice }
   | { type: 'join_call'; inviteCode: string }
   | { type: 'join_call'; seatToken: string }
   | { type: 'answer_call' }
   | { type: 'hospital_speaking_start' }
   | { type: 'hospital_speaking_stop' }
   | { type: 'hospital_speech_end' }
-  | { type: 'speech_playback'; seq: number; status: PlaybackStatus }
+  | { type: 'speech_playback'; seq: number; status: PlaybackStatus; engine?: SpeechEngine }
+  /** 相手の画面が、まだ受け取っていない本人の発言の音声を求める（再接続・再読み込みの後など）。 */
+  | { type: 'speech_audio_request'; seq: number }
+  /** 本人が、自分の文を相手の端末でもう一度読み上げるよう頼む。新しい発言にはしない。 */
+  | { type: 'speech_replay_request'; seq: number }
   | { type: 'patient_typing_notice' }
   | { type: 'patient_polish_request'; requestId: string; text: string }
   | { type: 'patient_confirmed_speech'; text: string; origin: SpeechOrigin }

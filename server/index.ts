@@ -2,10 +2,15 @@ import 'dotenv/config';
 import http from 'node:http';
 import next from 'next';
 import speech from '@google-cloud/speech';
+import textToSpeech from '@google-cloud/text-to-speech';
+import { TYPING_NOTICE_TEXT } from '../src/lib/callProtocol';
+import { QUICK_PHRASES } from '../src/lib/quickPhrases';
 import { attachCallServer, resolveAllowedOrigins } from './callServer';
 import { createGeminiRunnerFromEnv } from './geminiClient';
 import { createAiAssistant } from './geminiService';
 import { createSpeechRecognizer, limitConcurrentStreams } from './speechRecognizer';
+import { DISABLED_SYNTHESIZER, createCloudSynthesizer, resolveSynthesizerConfig } from './speechSynthesizer';
+import type { SpeechSynthesizer, TtsClientLike } from './speechSynthesizer';
 
 /**
  * 本番（NODE_ENV=production）では、画面（Next.js）と通話のWebSocketを同じポートで配る。
@@ -26,6 +31,20 @@ async function prepareNext(): Promise<RequestHandler> {
   await app.prepare();
   const handle = app.getRequestHandler();
   return (req, res) => handle(req, res);
+}
+
+/**
+ * 本人の文を読み上げる音声合成（Cloud Text-to-Speech、Chirp 3: HD）。
+ * 即答フレーズと「入力中です」は個人の情報を含まない決まった文なので、作り置きして使い回す。
+ * TTS_ENABLED=false なら使わず、相手の端末の声で読む。
+ */
+function createSynthesizer(): SpeechSynthesizer {
+  const config = resolveSynthesizerConfig(process.env, [...QUICK_PHRASES, TYPING_NOTICE_TEXT]);
+  if (!config) return DISABLED_SYNTHESIZER;
+  const client = new textToSpeech.TextToSpeechClient(
+    process.env.TTS_API_ENDPOINT ? { apiEndpoint: process.env.TTS_API_ENDPOINT } : {},
+  );
+  return createCloudSynthesizer(client as unknown as TtsClientLike, config);
 }
 
 async function main(): Promise<void> {
@@ -51,6 +70,7 @@ async function main(): Promise<void> {
         createSpeechRecognizer(new speech.SpeechClient()),
         MAX_CONCURRENT_STT_STREAMS,
       ),
+      tts: createSynthesizer(),
     },
     { allowedOrigins: resolveAllowedOrigins(process.env) },
   );

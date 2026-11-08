@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useEffectEvent, useCallback } from 'react';
-import { Mic, Phone, PhoneOff } from 'lucide-react';
+import { Mic, Phone, PhoneOff, RotateCcw, Volume2 } from 'lucide-react';
 import { CallNotice, MockModeNotice } from '@/components/AiStatusBadge';
 import { DemoDataNotice } from '@/components/DemoDataNotice';
 import { AppHeader, CallStatus } from '@/components/AppHeader';
@@ -28,6 +28,9 @@ import type {
 import { CALL_PURPOSE_PROFILES, DEFAULT_CALL_PURPOSE } from '@/lib/callPurpose';
 import type { CallPurpose } from '@/lib/callPurpose';
 import { loadSpokenSeq, saveSpokenSeq } from '@/lib/callSession';
+import { createDeviceVoice, createHtmlAudioOutput } from '@/lib/browserSpeech';
+import { SpeechPlaybackQueue } from '@/lib/speechPlayback';
+import type { SpeechQueueState } from '@/lib/speechPlayback';
 
 /** 押してから、サーバーの受け付けとマイクの準備がそろうまでは録音中と表示しない。 */
 type RecordingPhase = 'idle' | 'awaiting_server' | 'opening_mic' | 'recording';
@@ -43,16 +46,7 @@ const PHASE_TO_CALL_STATE: Record<CallPhase, HospitalCallState> = {
 
 const PATIENT_DISCONNECTED_NOTICE = '相手の接続が切れています。';
 
-/**
- * 読み上げが終わった合図が来ないときに、次へ進むまでの上限。
- * ブラウザによっては長い文の途中で読み上げが止まり、終わりの合図が来ない。待ち続けると録音もできなくなる。
- */
-function readingWatchdogMs(text: string): number {
-  return Math.max(8_000, text.length * 300 + 4_000);
-}
-
-/** 時間切れで読み上げを止めた後、次の文を読むまでの間。止める処理に次の文が巻き込まれないようにする。 */
-const RESUME_AFTER_CANCEL_MS = 300;
+const IDLE_SPEECH: SpeechQueueState = { seq: null, phase: 'idle', blocked: false, deviceVoiceMissing: false };
 
 /** これより短く押したら「押して開始・もう一度押して終了」、長く押したら離したときに終える。 */
 const HOLD_THRESHOLD_MS = 400;
@@ -65,12 +59,6 @@ const CLICK_AFTER_GESTURE_MS = 700;
 
 /** 録音の操作欄に出す、認識途中の文の長さ。全文は字幕に出す。 */
 const LIVE_TAIL_LENGTH = 36;
-
-interface QueuedSpeech {
-  text: string;
-  /** 通話の記録にある発言の番号。自動案内にはない。 */
-  seq?: number;
-}
 
 /** 相手の画面の字幕の1行。この画面から見て、EchoBridgeを使う人が「相手」。 */
 interface CaptionLine {
@@ -116,7 +104,7 @@ function describePtt(
   isConnected: boolean,
   phase: RecordingPhase,
   isLatched: boolean,
-  isReadingAloud: boolean,
+  speech: SpeechQueueState,
   isPatientSpeaking: boolean,
   speechStatus: SpeechStatus | null,
 ): string {
@@ -127,7 +115,9 @@ function describePtt(
       : '録音中です。話し終えたら離してください';
   }
   if (phase !== 'idle') return '録音を準備しています。まだ話さないでください';
-  if (isReadingAloud) return '相手の文を読み上げています。終わってから話してください';
+  if (speech.blocked) return '音声の再生が止まっています。「音声を再生する」を押してください';
+  if (speech.phase === 'waiting') return '相手の文の音声を準備しています。少しお待ちください';
+  if (speech.phase === 'playing') return '相手の文を読み上げています。終わってから話してください';
   if (isPatientSpeaking) return '相手が入力中です。少しお待ちください';
   if (speechStatus === 'unavailable') return '音声認識を利用できません。押すと再確認します';
   if (speechStatus !== 'ready') return '音声認識を準備しています。まだ録音できません';
@@ -163,9 +153,8 @@ export default function HospitalApp() {
   const [partnerName, setPartnerName] = useState('');
   const [captions, setCaptions] = useState<CaptionLine[]>([]);
   const [liveText, setLiveText] = useState('');
-  // 今読み上げている発言。字幕で強調し、その間は録音を始めない。
-  const [readingSeq, setReadingSeq] = useState<number | null>(null);
-  const [isReadingAloud, setIsReadingAloud] = useState(false);
+  // 読み上げの状態。読んでいる・音声を待っている文は字幕で強調し、その間は録音を始めない。
+  const [speech, setSpeech] = useState<SpeechQueueState>(IDLE_SPEECH);
   // 押して開始した録音（もう一度押すまで続く）か。
   const [isLatched, setIsLatched] = useState(false);
   // 開発用のモックサーバーにつないでいる。文字起こしは台本なので、画面で明示する。
@@ -186,10 +175,10 @@ export default function HospitalApp() {
   const ringAudioCtxRef = useRef<AudioContext | null>(null);
   const activeGainRef = useRef<GainNode | null>(null);
 
-  const speechQueueRef = useRef<QueuedSpeech[]>([]);
-  const isSpeakingRef = useRef<boolean>(false);
-  const readingWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // サーバーで本人の文を音声にできるか。できなければ音声を待たずに端末の声で読む。
+  const ttsAvailableRef = useRef(false);
+  // 字幕にある本人の文。読み直しに使う。
+  const callerTextsRef = useRef(new Map<number, string>());
   // 録音ボタンの操作の状態。押している途中か、押して開始した録音か、直前の操作の時刻。
   const holdRef = useRef<'none' | 'pointer' | 'key'>('none');
   const pressStartedAtRef = useRef(0);
@@ -205,102 +194,44 @@ export default function HospitalApp() {
   const captionsEndRef = useRef<HTMLDivElement>(null);
   const localIdRef = useRef(0);
 
-  const markSpoken = useCallback((seq: number | undefined) => {
-    const seatToken = channel.seatTokenRef.current;
-    if (seq !== undefined && seatToken) saveSpokenSeq(seatToken, seq);
+  /**
+   * 本人の文を順に鳴らす。サーバーの音声を優先し、作れなかった文は端末の声で読む。
+   * 録音中と、再読み込みの後に操作を待っている間は鳴らさない。声が重なるうえ、読み上げ中の音声は送らないので、話した内容が欠ける。
+   */
+  // 描画の中では使わない。初めて使う処理（受信・操作・録音）のときに作る。
+  const queueRef = useRef<SpeechPlaybackQueue | null>(null);
+  const getQueue = useCallback((): SpeechPlaybackQueue => {
+    queueRef.current ??= new SpeechPlaybackQueue({
+      output: createHtmlAudioOutput(),
+      device: createDeviceVoice(),
+      isPaused: () => recordingPhaseRef.current !== 'idle' || isAudioBlockedRef.current,
+      onState: setSpeech,
+      onReport: (seq, status: PlaybackStatus, engine) => {
+        channel.send({ type: 'speech_playback', seq, status, engine });
+      },
+      onSpoken: (seq) => {
+        const seatToken = channel.seatTokenRef.current;
+        if (seatToken) saveSpokenSeq(seatToken, seq);
+      },
+      onNeedAudio: (seq) => {
+        channel.send({ type: 'speech_audio_request', seq });
+      },
+    });
+    return queueRef.current;
   }, [channel]);
 
-  /** 読み上げの結果を本人の画面に知らせる。自動案内には番号がないので知らせない。 */
-  const reportPlayback = useCallback((seq: number | undefined, status: PlaybackStatus) => {
-    if (seq !== undefined) channel.send({ type: 'speech_playback', seq, status });
-  }, [channel]);
-
-  const setReading = useCallback((reading: boolean, seq: number | null) => {
-    isSpeakingRef.current = reading;
-    setIsReadingAloud(reading);
-    setReadingSeq(seq);
-  }, []);
-
-  const clearReadingWatchdog = useCallback(() => {
-    if (readingWatchdogRef.current) {
-      clearTimeout(readingWatchdogRef.current);
-      readingWatchdogRef.current = null;
-    }
-  }, []);
-
-  const processSpeechQueue = useCallback(function processNext() {
-    if (isSpeakingRef.current || isAudioBlockedRef.current || speechQueueRef.current.length === 0) return;
-    // 録音中は読み上げない。声が重なるうえ、読み上げ中の音声は送らないので、話した内容が欠ける。
-    if (recordingPhaseRef.current !== 'idle' || resumeTimerRef.current) return;
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-
-    const next = speechQueueRef.current.shift();
-    if (!next) return;
-
-    setReading(true, next.seq ?? null);
-    const utterance = new SpeechSynthesisUtterance(next.text);
-    utterance.lang = 'ja-JP';
-    utterance.rate = 1.0;
-
-    let finished = false;
-    const finish = (status: PlaybackStatus | null) => {
-      if (finished) return;
-      finished = true;
-      clearReadingWatchdog();
-      setReading(false, null);
-      markSpoken(next.seq);
-      if (status) reportPlayback(next.seq, status);
-      processNext();
-    };
-    utterance.onstart = () => {
-      if (!finished) reportPlayback(next.seq, 'started');
-    };
-    utterance.onend = () => finish('ended');
-    utterance.onerror = () => finish('failed');
-    // 終わりの合図が来ないときは、読み上げを実際に止めてから先へ進む。
-    // 止めないとブラウザは読み上げ中のままで、次の文が始まらず、録音の音声も捨てられる。
-    // 聞けたかどうかは分からないので、結果は知らせない。止めたことで届く合図は、finished で無視する。
-    clearReadingWatchdog();
-    readingWatchdogRef.current = setTimeout(() => {
-      if (finished) return;
-      finished = true;
-      readingWatchdogRef.current = null;
-      window.speechSynthesis.cancel();
-      setReading(false, null);
-      markSpoken(next.seq);
-      resumeTimerRef.current = setTimeout(() => {
-        resumeTimerRef.current = null;
-        processNext();
-      }, RESUME_AFTER_CANCEL_MS);
-    }, readingWatchdogMs(next.text));
-
-    window.speechSynthesis.speak(utterance);
-  }, [clearReadingWatchdog, markSpoken, reportPlayback, setReading]);
-
+  /** 本人の文を並べる。再接続で同じ番号が届いても二度読まない。 */
   const queueSpeech = useCallback((text: string, seq?: number) => {
     if (seq !== undefined) {
       if (seq <= lastQueuedSeqRef.current) return;
       lastQueuedSeqRef.current = seq;
     }
-    speechQueueRef.current.push({ text, seq });
-    processSpeechQueue();
-  }, [processSpeechQueue]);
-
-  const clearSpeechQueue = useCallback(() => {
-    speechQueueRef.current = [];
-    clearReadingWatchdog();
-    if (resumeTimerRef.current) {
-      clearTimeout(resumeTimerRef.current);
-      resumeTimerRef.current = null;
-    }
-    setReading(false, null);
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-  }, [clearReadingWatchdog, setReading]);
+    getQueue().enqueue({ text, seq, expectAudio: seq !== undefined && ttsAvailableRef.current });
+  }, [getQueue]);
 
   /** 字幕に1行足す。同じ番号の発言は二重に並べない。 */
   const addCaption = useCallback((line: Omit<CaptionLine, 'id'> & { id?: string }) => {
+    if (line.who === 'caller' && line.seq !== undefined) callerTextsRef.current.set(line.seq, line.text);
     setCaptions((prev) => {
       if (line.seq !== undefined && prev.some((existing) => existing.seq === line.seq)) return prev;
       localIdRef.current += 1;
@@ -403,8 +334,8 @@ export default function HospitalApp() {
       latchTimerRef.current = null;
     }
     // 録音中に届いて待たせていた文を読む。
-    processSpeechQueue();
-  }, [processSpeechQueue, setRecordingPhase]);
+    getQueue().process();
+  }, [getQueue, setRecordingPhase]);
 
   const beginCapture = useCallback(async () => {
     captureAttemptRef.current += 1;
@@ -429,7 +360,7 @@ export default function HospitalApp() {
 
       processor.onaudioprocess = (e) => {
         // この画面が読み上げている間は送らない。ブラウザの speaking は止まった後も残ることがあるので使わない。
-        if (isSpeakingRef.current) return;
+        if (getQueue().isPlaying) return;
 
         const inputData = e.inputBuffer.getChannelData(0);
         const outputData = new Int16Array(inputData.length);
@@ -450,14 +381,14 @@ export default function HospitalApp() {
       releaseMic();
       channel.send({ type: 'hospital_speaking_stop' });
     }
-  }, [channel, releaseMic, setRecordingPhase]);
+  }, [channel, getQueue, releaseMic, setRecordingPhase]);
 
   /** 通話の音と録音を止める。画面の状態はそのまま。 */
   const stopCallMedia = useCallback(() => {
     stopRingtone();
-    clearSpeechQueue();
+    getQueue().clear();
     releaseMic();
-  }, [clearSpeechQueue, releaseMic, stopRingtone]);
+  }, [getQueue, releaseMic, stopRingtone]);
 
   /** 通話から離れ、コードの入力画面へ戻す。 */
   const returnToLobby = useCallback(() => {
@@ -472,6 +403,7 @@ export default function HospitalApp() {
     setPurpose(DEFAULT_CALL_PURPOSE);
     isAudioBlockedRef.current = false;
     lastQueuedSeqRef.current = 0;
+    callerTextsRef.current.clear();
   }, [stopCallMedia]);
 
   /** サーバーの状態に画面を合わせる。切断中に送られた文は、ここから読み上げる。 */
@@ -483,6 +415,9 @@ export default function HospitalApp() {
     setPurpose(snapshot.purpose);
     setPartnerName(snapshot.partnerName);
     setCaptions(snapshot.turns.map(turnToCaption));
+    snapshot.turns
+      .filter((turn) => turn.sender === '患者')
+      .forEach((turn) => callerTextsRef.current.set(turn.seq, turn.text));
     setLiveText('');
     setCallNotice(null);
 
@@ -501,11 +436,22 @@ export default function HospitalApp() {
     snapshot.turns
       .filter((turn) => turn.sender === '患者')
       .forEach((turn) => queueSpeech(turn.text, turn.seq));
-  }, [queueSpeech, startRingtone, stopRingtone]);
+    // 切断中に送られた音声は届いていないので、読み残しの分を求め直す。
+    getQueue().requestPendingAudio();
+  }, [getQueue, queueSpeech, startRingtone, stopRingtone]);
 
   const handleServerMessage = useCallback((data: ServerMessage) => {
     if (data.type === 'ai_status') {
       setIsMockMode(data.backend === 'mock');
+    } else if (data.type === 'tts_status') {
+      ttsAvailableRef.current = data.available;
+    } else if (data.type === 'speech_audio') {
+      getQueue().provideAudio(data.seq, { audio: data.audio, mimeType: data.mimeType });
+    } else if (data.type === 'speech_audio_failed') {
+      getQueue().audioFailed(data.seq);
+    } else if (data.type === 'speech_replay') {
+      const text = callerTextsRef.current.get(data.seq);
+      if (text) getQueue().replay(data.seq, text, ttsAvailableRef.current);
     } else if (data.type === 'speech_status') {
       setSpeechStatus(data.status);
     } else if (data.type === 'call_joined') {
@@ -543,7 +489,8 @@ export default function HospitalApp() {
       queueSpeech(data.text, data.seq);
     } else if (data.type === 'patient_typing_notice') {
       addCaption({ who: 'notice', text: data.text });
-      queueSpeech(data.text);
+      const audio = data.audio && data.mimeType ? { audio: data.audio, mimeType: data.mimeType } : undefined;
+      getQueue().enqueue({ text: data.text, audio, expectAudio: false });
     } else if (data.type === 'patient_speech') {
       addCaption({ id: String(data.seq), who: 'caller', text: data.text, seq: data.seq });
       queueSpeech(data.text, data.seq);
@@ -555,7 +502,7 @@ export default function HospitalApp() {
       releaseMic();
       setCallState('ended');
     }
-  }, [addCaption, applySnapshot, beginCapture, queueSpeech, releaseMic, returnToLobby, stopRingtone]);
+  }, [addCaption, applySnapshot, beginCapture, getQueue, queueSpeech, releaseMic, returnToLobby, stopRingtone]);
 
   const isConnected = useCallSocket(channel, {
     onMessage: handleServerMessage,
@@ -615,6 +562,7 @@ export default function HospitalApp() {
     const inviteCode = normalizeInviteCode(inviteInput);
     if (!inviteCode) return;
     hasUserGestureRef.current = true;
+    getQueue().unlock();
     setCallNotice(null);
     if (channel.send({ type: 'join_call', inviteCode })) {
       setInviteInput('');
@@ -623,6 +571,8 @@ export default function HospitalApp() {
 
   const handleAnswerCall = () => {
     hasUserGestureRef.current = true;
+    // あいさつは応答の後に届く。iPhoneは操作の中で一度鳴らした部品でしか後から鳴らせないので、ここで許可しておく。
+    getQueue().unlock();
     // 切断中に押しても応答にはならない。再接続の帯が出ているので、着信の画面に留める。
     if (!channel.send({ type: 'answer_call' })) return;
     stopRingtone(); // ボタン押下時に即時停止
@@ -634,7 +584,22 @@ export default function HospitalApp() {
     hasUserGestureRef.current = true;
     isAudioBlockedRef.current = false;
     setNeedsAudioResume(false);
-    processSpeechQueue();
+    getQueue().unlock();
+  };
+
+  /** ブラウザが止めた再生を、この操作の中でやり直す。 */
+  const handleUnblockAudio = () => {
+    hasUserGestureRef.current = true;
+    getQueue().unlock();
+  };
+
+  /** 字幕の文をもう一度聞く。録音中は鳴らさず、録音が終わってから読む。 */
+  const handleReplay = (seq: number) => {
+    const text = callerTextsRef.current.get(seq);
+    if (!text) return;
+    hasUserGestureRef.current = true;
+    getQueue().unlock();
+    getQueue().replay(seq, text, ttsAvailableRef.current);
   };
 
   const handleHangUp = () => {
@@ -653,16 +618,18 @@ export default function HospitalApp() {
   };
 
   // 切断中は speechStatus が null になる。unavailable で押すと、サーバーが認証を確認し直す。
+  // 読み上げ中・音声を待っている間・再生が止められている間は録音しない。相手の文を聞き終えてから話す。
+  const isHoldingForSpeech = speech.phase !== 'idle' || speech.blocked;
   const canStartRecording =
     !isPatientSpeaking &&
-    !isReadingAloud &&
+    !isHoldingForSpeech &&
     (speechStatus === 'ready' || speechStatus === 'unavailable');
   const isPreparing = recordingPhase === 'awaiting_server' || recordingPhase === 'opening_mic';
   const isRecording = recordingPhase === 'recording';
 
   // マイクを開くのはサーバーが受け付けた後。使えないときに許可を求めず、音声も送らない。
   const startRecording = (): boolean => {
-    if (recordingPhaseRef.current !== 'idle' || !canStartRecording || isSpeakingRef.current) return false;
+    if (recordingPhaseRef.current !== 'idle' || !canStartRecording || getQueue().isPlaying) return false;
     setRecordingFailure(null);
     setRecordingPhase('awaiting_server');
     if (!channel.send({ type: 'hospital_speaking_start' })) {
@@ -901,16 +868,19 @@ export default function HospitalApp() {
                         key={line.id}
                         className={cx('flex flex-col gap-1.5', line.who === 'me' ? 'items-end' : 'items-start')}
                       >
-                        <p className="flex items-center gap-2 px-1 text-[13px]">
+                        <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-1 text-[13px]">
                           <span className="font-bold text-ink">{line.who === 'me' ? 'あなた' : '相手'}</span>
                           <span className="text-ink-2">
                             {line.who === 'me' ? '文字起こし' : '読み上げた文'}
                           </span>
-                          {line.seq !== undefined && line.seq === readingSeq && (
+                          {line.seq !== undefined && line.seq === speech.seq && speech.phase === 'playing' && (
                             <span className="inline-flex items-center gap-1.5 font-bold text-voice-strong">
                               <span aria-hidden className="eb-live-dot size-2 rounded-full bg-voice" />
                               読み上げ中
                             </span>
+                          )}
+                          {line.seq !== undefined && line.seq === speech.seq && speech.phase === 'waiting' && (
+                            <span className="font-bold text-ink-2">音声を準備中</span>
                           )}
                         </p>
                         <p
@@ -919,11 +889,23 @@ export default function HospitalApp() {
                             line.who === 'me'
                               ? 'bg-subtle text-[16px] text-ink'
                               : 'border border-line bg-surface text-[19px] text-ink',
-                            line.seq !== undefined && line.seq === readingSeq && 'border-voice ring-1 ring-voice',
+                            line.seq !== undefined && line.seq === speech.seq && 'border-voice ring-1 ring-voice',
                           )}
                         >
                           {line.text}
                         </p>
+                        {line.who === 'caller' && line.seq !== undefined && (
+                          <button
+                            type="button"
+                            onClick={() => handleReplay(line.seq as number)}
+                            disabled={recordingPhase !== 'idle' || isHoldingForSpeech}
+                            aria-label={`もう一度聞く：${line.text}`}
+                            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-[14px] font-bold text-voice-strong hover:bg-voice-soft disabled:text-ink-2/60 disabled:hover:bg-transparent"
+                          >
+                            <RotateCcw className="size-4" aria-hidden />
+                            もう一度聞く
+                          </button>
+                        )}
                       </li>
                     ),
                   )}
@@ -950,6 +932,27 @@ export default function HospitalApp() {
               className="shrink-0 border-t border-line bg-surface px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] lg:flex lg:flex-col lg:justify-center lg:border-t-0 lg:px-6 lg:py-6"
             >
               <div className="mx-auto w-full max-w-md space-y-3">
+                {speech.blocked && (
+                  <div
+                    aria-live="assertive"
+                    className="space-y-2 rounded-xl border border-caution-line bg-caution-soft px-4 py-3"
+                  >
+                    <p className="text-[15px] font-bold text-caution">ブラウザが音声の再生を止めました。</p>
+                    <button
+                      type="button"
+                      onClick={handleUnblockAudio}
+                      className={buttonClass('primary', 'lg', 'w-full')}
+                    >
+                      <Volume2 className="size-5" aria-hidden />
+                      音声を再生する
+                    </button>
+                  </div>
+                )}
+                {speech.deviceVoiceMissing && (
+                  <p className="rounded-xl border border-line bg-subtle px-4 py-3 text-[14px] leading-relaxed text-ink">
+                    この端末には日本語の読み上げ音声がないため、一部の文は字幕だけで届いています。
+                  </p>
+                )}
                 {/* 長い文で録音ボタンが押し出されないよう、高さを固定して末尾だけを出す。全文は字幕にある。 */}
                 <p
                   data-testid="ptt-live"
@@ -986,7 +989,7 @@ export default function HospitalApp() {
                   押して話す
                 </button>
                 <p role="status" className="text-center text-[15px] font-bold text-ink">
-                  {describePtt(isConnected, recordingPhase, isLatched, isReadingAloud, isPatientSpeaking, speechStatus)}
+                  {describePtt(isConnected, recordingPhase, isLatched, speech, isPatientSpeaking, speechStatus)}
                 </p>
                 {recordingFailure && (
                   <p role="alert" className="text-center text-[15px] font-bold text-danger">
