@@ -31,7 +31,7 @@
 | AIが使えないときの定型文と出所の表示 | — | 実装済み |
 | 即答フレーズ（AIを待たずに送る） | — | 実装済み |
 | 登録した文（自己紹介などを本人が登録し、表示どおりに送る。端末のブラウザにだけ保存） | `localStorage` | 実装済み |
-| 本人が確定した文の読み上げ、読み上げ状態の報告 | ブラウザの `speechSynthesis` | 実装済み（実機の音は人が確認） |
+| 本人が確定した文の読み上げ（女性・男性の声を選べる）、音声の作成と再生の状態の報告、読み直し | Cloud Text-to-Speech（Chirp 3: HD、ja-JP）。使えないときは相手の端末の日本語の声（`speechSynthesis`） | 実装済み・実APIとPCのブラウザで確認（スマートフォン実機は人が確認） |
 | 予定の下書きとGoogleカレンダーへの追加 | カレンダーの予定作成URL（APIは使わない） | 実装済み |
 | 予定の場所をGoogleマップで確かめる、自分の予定をGoogleカレンダーで見る | Maps URLs、カレンダーのURL（APIキー不要） | 実装済み |
 
@@ -46,7 +46,7 @@ flowchart LR
   end
   subgraph partner["相手のブラウザ（/join）"]
     P["参加・押して話す画面"]
-    T["speechSynthesis で読み上げ"]
+    T["audio要素で再生（使えなければ端末の日本語の声）"]
   end
   subgraph gcp["Google Cloud"]
     subgraph run["Cloud Run（1サービス・最大1インスタンス）"]
@@ -54,6 +54,7 @@ flowchart LR
     end
     S["Speech-to-Text v1"]
     G["Vertex AI Gemini"]
+    TT["Text-to-Speech（Chirp 3: HD）"]
   end
   C["Google カレンダーの予定作成画面"]
   U <-->|"WebSocket"| W
@@ -61,7 +62,8 @@ flowchart LR
   W -->|"音声"| S
   S -->|"文字起こし"| W
   W <-->|"返答候補・整形・予定の読み取り"| G
-  W -->|"本人が確定した文"| P
+  W <-->|"本人が確定した文 → 音声（MP3）"| TT
+  W -->|"本人が確定した文と音声"| P
   P --> T
   U -->|"本人が確認した予定"| C
 ```
@@ -120,6 +122,11 @@ GOOGLE_CLOUD_LOCATION=global
 | `GEMINI_EXTRACTION_TIMEOUT_MS` | 通話後の予定の読み取りを待つ上限（ミリ秒） | `20000` |
 | `GEMINI_MAX_REQUESTS_PER_MINUTE` | サーバー全体でGeminiへ送る依頼の上限（1分あたり）。超えた分は定型文として明示して返す | `60` |
 | `STT_MAX_CONCURRENT_STREAMS` | 同時に録音できる数（STTの課金の上限） | `3` |
+| `TTS_ENABLED` | `false` でCloud Text-to-Speechを使わず、相手の端末の声で読む | 使う |
+| `TTS_VOICE_FEMALE` / `TTS_VOICE_MALE` | 本人が選ぶ「女性の声」「男性の声」の実際の声 | `ja-JP-Chirp3-HD-Aoede` / `ja-JP-Chirp3-HD-Charon` |
+| `TTS_SPEAKING_RATE` | 話す速さ（0.25〜2.0） | `1` |
+| `TTS_DAILY_CHAR_LIMIT` | 1日（日本時間）に合成する文字数の上限。超えた分は相手の端末の声で読む | `50000` |
+| `TTS_API_ENDPOINT` | Text-to-Speechの接続先を変えるとき（地域のエンドポイントなど） | 既定（global） |
 | `PORT` | サーバーのポート。Cloud Runが設定する | `8080` |
 | `ALLOWED_ORIGINS` | 同一オリジンのほかに接続を許可するオリジン（カンマ区切り） | 開発時は `http://localhost:3000` と `http://127.0.0.1:3000`、本番はなし |
 | `NEXT_PUBLIC_WS_URL` | 通話サーバーの接続先（ビルド時に埋め込み）。別サービスに分けるときだけ指定 | 同一オリジン（開発時は同じホストの8080番） |
@@ -148,7 +155,7 @@ npm run test:live
 
 | 必要なもの | 内容 |
 |---|---|
-| API | Cloud Run Admin API、Artifact Registry API、Vertex AI API、Cloud Speech-to-Text API |
+| API | Cloud Run Admin API、Artifact Registry API、Vertex AI API、Cloud Speech-to-Text API、Cloud Text-to-Speech API |
 | 実行用サービスアカウント | `roles/aiplatform.user`（Gemini） |
 | 公開 | `--no-invoker-iam-check`、または `allUsers` への `roles/run.invoker`（Cloud Run管理者の権限が必要） |
 | 環境変数 | `GOOGLE_GENAI_USE_VERTEXAI=true`、`GOOGLE_CLOUD_PROJECT`、`GOOGLE_CLOUD_LOCATION` |
@@ -168,7 +175,8 @@ NODE_ENV=production npm start
 ## 制約と今後
 
 - 通話の状態はメモリだけ。複数インスタンスにするには Memorystore や Firestore で共有が必要
-- 読み上げは相手の端末のブラウザ音声に依存する。端末によって声が変わる（Cloud Text-to-Speech への切り替えを検討中）
+- 読み上げは文ごとの一括合成（MP3）。長い文ほど音声が届くまで時間がかかる（実測 18文字0.6秒、40文字1.3秒。あいさつは相手の着信中に作る）
+- Cloud Text-to-Speech が使えないときの端末の声は、日本語の声がない端末では使わない（字幕だけになる）
 - 相手の画面のマイクはHTTPS（またはlocalhost）でしか使えない
 - 予定はカレンダーの作成画面を開くだけで、本人の予定は読まない（空き時間の確認は検討中）
 - 対応言語は日本語だけ
