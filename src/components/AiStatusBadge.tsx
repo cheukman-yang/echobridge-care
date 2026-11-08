@@ -66,8 +66,11 @@ export function CallNotice({ text }: { text: string | null }) {
 export function MockModeNotice({ active }: { active: boolean }) {
   if (!active) return null;
   return (
-    <Notice tone="caution" testId="mock-mode-notice" title="開発用のモックモードです">
-      文字起こし・返答候補・文の整形・予定の読み取りは台本の結果で、Gemini と Speech-to-Text は使っていません。デモや提出物で実際の機能として見せないでください。
+    <Notice tone="caution" testId="mock-mode-notice" title="開発用のモックモードです（AIではありません）">
+      {/* 狭い画面では会話の表示を狭めないよう、見出しだけにする。 */}
+      <p className="max-sm:sr-only">
+        文字起こし・返答候補・文の整形・予定の読み取りは台本の結果で、Gemini と Speech-to-Text は使っていません。デモや提出物で実際の機能として見せないでください。
+      </p>
     </Notice>
   );
 }
