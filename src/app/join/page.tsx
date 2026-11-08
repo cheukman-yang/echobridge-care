@@ -14,7 +14,7 @@ import {
   RECONNECTING_NOTICE,
   SEAT_TAKEN_NOTICE,
 } from '@/lib/callNotices';
-import { normalizeInviteCode, parseInviteFromHash } from '@/lib/callProtocol';
+import { STT_SAMPLE_RATE_HZ, normalizeInviteCode, parseInviteFromHash } from '@/lib/callProtocol';
 import type {
   CallPhase,
   CallSnapshot,
@@ -23,12 +23,14 @@ import type {
   PlaybackStatus,
   RecordingFailureReason,
   ServerMessage,
+  SpeechEngine,
   SpeechStatus,
 } from '@/lib/callProtocol';
 import { CALL_PURPOSE_PROFILES, DEFAULT_CALL_PURPOSE } from '@/lib/callPurpose';
 import type { CallPurpose } from '@/lib/callPurpose';
 import { loadSpokenSeq, saveSpokenSeq } from '@/lib/callSession';
 import { createDeviceVoice, createHtmlAudioOutput } from '@/lib/browserSpeech';
+import { Pcm16Resampler } from '@/lib/pcmResampler';
 import { SpeechPlaybackQueue } from '@/lib/speechPlayback';
 import type { SpeechQueueState } from '@/lib/speechPlayback';
 
@@ -60,6 +62,23 @@ const CLICK_AFTER_GESTURE_MS = 700;
 /** 録音の操作欄に出す、認識途中の文の長さ。全文は字幕に出す。 */
 const LIVE_TAIL_LENGTH = 36;
 
+/** マイクの部品が止まったまま始まったときに、再開を待つ上限。 */
+const AUDIO_RESUME_TIMEOUT_MS = 1_000;
+
+/** 録音中と表示してから、マイクの音が1つも届かないまま終えたら、マイクの不具合として知らせるまでの時間。 */
+const NO_AUDIO_NOTICE_MS = 1_000;
+
+/** 切断中に送れなかった再生の報告を、つなぎ直すまで持っておく数。古いものから捨てる。 */
+const MAX_UNSENT_REPORTS = 40;
+
+interface UnsentReport {
+  /** 報告した時の席。別の通話に入り直したら送らない。 */
+  seatToken: string;
+  seq: number;
+  status: PlaybackStatus;
+  engine: SpeechEngine;
+}
+
 /** 相手の画面の字幕の1行。この画面から見て、EchoBridgeを使う人が「相手」。 */
 interface CaptionLine {
   id: string;
@@ -79,9 +98,10 @@ function turnToCaption(turn: CallTurn): CaptionLine {
 
 type AudioContextWindow = typeof window & { webkitAudioContext?: typeof AudioContext };
 
-function createAudioContext(options?: AudioContextOptions): AudioContext {
+/** サンプリングレートは指定しない。端末と違うレートを指定すると、iPhoneで音が欠ける報告がある（src/lib/pcmResampler.ts）。 */
+function createAudioContext(): AudioContext {
   const AudioCtx = window.AudioContext || (window as AudioContextWindow).webkitAudioContext;
-  return new AudioCtx(options);
+  return new AudioCtx();
 }
 
 /** リンクで開いた招待コードを取り出し、アドレスバーと履歴からは消す。 */
@@ -91,14 +111,57 @@ function takeInviteFromUrl(): string | null {
   return code;
 }
 
-/** 録音の後に出す知らせ。サーバーの失敗の理由に、文字にならなかった場合を足す。 */
-type RecordingNotice = RecordingFailureReason | 'no_speech';
+/** マイクを開けなかった理由。ブラウザのエラーの名前から分ける。 */
+type MicFailure = 'mic_denied' | 'mic_missing' | 'mic_busy' | 'mic_insecure' | 'mic_unsupported' | 'mic_failed';
+
+/**
+ * 録音の後に出す知らせ。サーバーの失敗の理由に、文字にならなかった場合と、マイクの問題を足す。
+ * 画面の中に出す。alert はアプリ内のブラウザで出ないことがあり、出ると通話の画面が隠れる。
+ */
+type RecordingNotice = RecordingFailureReason | 'no_speech' | 'no_audio' | MicFailure;
 
 const RECORDING_FAILURE_LABELS: Record<RecordingNotice, string> = {
   start_failed: '録音を開始できませんでした。音声は送られていません。',
   stream_failed: '音声認識が中断しました。もう一度話してください。',
   no_speech: '声を聞き取れませんでした。相手には何も届いていません。もう一度話してください。',
+  no_audio: 'マイクの音を受け取れませんでした。相手には何も届いていません。もう一度押してください。続くときは画面を読み込み直してください。',
+  mic_denied: 'マイクの使用が許可されていません。ブラウザの設定で、このサイトのマイクを許可してください。',
+  mic_missing: 'マイクが見つかりません。マイクを接続してから、もう一度押してください。',
+  mic_busy: 'マイクを使えませんでした。ほかのアプリがマイクを使っていないか確かめてください。',
+  mic_insecure: 'このページではマイクを使えません。https:// で始まるアドレスで開いてください。',
+  mic_unsupported: 'このブラウザではマイクを使えません。SafariかChromeで開き直してください。',
+  mic_failed: 'マイクを開けませんでした。もう一度押してください。',
 };
+
+/** このブラウザで録音できるか。できなければ理由を返す。アプリ内のブラウザや http のページでは使えない。 */
+function micUnavailableReason(): MicFailure | null {
+  if (typeof window !== 'undefined' && window.isSecureContext === false) return 'mic_insecure';
+  if (typeof navigator === 'undefined' || typeof navigator.mediaDevices?.getUserMedia !== 'function') {
+    return 'mic_unsupported';
+  }
+  return null;
+}
+
+function micFailure(error: unknown): MicFailure {
+  const name = (error as { name?: unknown } | null)?.name;
+  if (name === 'NotAllowedError' || name === 'SecurityError') return 'mic_denied';
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'mic_missing';
+  if (name === 'NotReadableError' || name === 'AbortError') return 'mic_busy';
+  return 'mic_failed';
+}
+
+/** 止まったまま始まった AudioContext を再開する。時間内に再開できなくても進め、音が届かなければ録音の後で知らせる。 */
+function resumeAudioContext(context: AudioContext): Promise<void> {
+  if (context.state !== 'suspended' || typeof context.resume !== 'function') return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, AUDIO_RESUME_TIMEOUT_MS);
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    context.resume().then(done, done);
+  });
+}
 
 function describePtt(
   isConnected: boolean,
@@ -169,6 +232,9 @@ export default function HospitalApp() {
   const recordingPhaseRef = useRef<RecordingPhase>('idle');
   // 開いている途中のマイクが、もう不要になったかを見分ける。
   const captureAttemptRef = useRef(0);
+  // 今の録音で送ったサンプルの数と、録音中と表示した時刻。マイクの音が届かない端末を見分ける。
+  const capturedSamplesRef = useRef(0);
+  const recordingSinceRef = useRef(0);
 
   // 着信音用の管理Ref
   const ringtoneTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -191,6 +257,8 @@ export default function HospitalApp() {
   // 操作があったページでは、再接続しても読み上げを続けられる。
   const hasUserGestureRef = useRef(false);
   const pendingInviteRef = useRef<string | null>(null);
+  // 切断中に読み終えた文の報告。送れないまま捨てると、本人の画面がその文を「読み上げ中」のまま止める。
+  const unsentReportsRef = useRef<UnsentReport[]>([]);
   const captionsEndRef = useRef<HTMLDivElement>(null);
   const localIdRef = useRef(0);
 
@@ -207,7 +275,13 @@ export default function HospitalApp() {
       isPaused: () => recordingPhaseRef.current !== 'idle' || isAudioBlockedRef.current,
       onState: setSpeech,
       onReport: (seq, status: PlaybackStatus, engine) => {
-        channel.send({ type: 'speech_playback', seq, status, engine });
+        if (channel.send({ type: 'speech_playback', seq, status, engine })) return;
+        // つなぎ直して同じ席に戻ったら送る（call_joined）。
+        const seatToken = channel.seatTokenRef.current;
+        if (!seatToken) return;
+        const unsent = unsentReportsRef.current;
+        unsent.push({ seatToken, seq, status, engine });
+        if (unsent.length > MAX_UNSENT_REPORTS) unsent.shift();
       },
       onSpoken: (seq) => {
         const seatToken = channel.seatTokenRef.current;
@@ -351,34 +425,37 @@ export default function HospitalApp() {
       }
       mediaStreamRef.current = stream;
 
-      const audioContext = createAudioContext({ sampleRate: 16000 });
+      // 端末の標準のレートで録り、STTの16kHzには自分で変える。
+      const audioContext = createAudioContext();
       audioContextRef.current = audioContext;
+      // サーバーの受け付けを待ってから作るので、操作の外になり、止まったまま始まるブラウザがある。
+      await resumeAudioContext(audioContext);
+      if (attempt !== captureAttemptRef.current) return;
 
+      const resampler = new Pcm16Resampler(audioContext.sampleRate, STT_SAMPLE_RATE_HZ);
       const source = audioContext.createMediaStreamSource(stream);
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
+      capturedSamplesRef.current = 0;
 
       processor.onaudioprocess = (e) => {
         // この画面が読み上げている間は送らない。ブラウザの speaking は止まった後も残ることがあるので使わない。
         if (getQueue().isPlaying) return;
 
-        const inputData = e.inputBuffer.getChannelData(0);
-        const outputData = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          const s = Math.max(-1, Math.min(1, inputData[i]));
-          outputData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        }
-
-        channel.sendAudio(outputData.buffer);
+        const pcm = resampler.process(e.inputBuffer.getChannelData(0));
+        if (pcm.length === 0) return;
+        capturedSamplesRef.current += pcm.length;
+        channel.sendAudio(pcm.buffer);
       };
 
       source.connect(processor);
       processor.connect(audioContext.destination);
+      recordingSinceRef.current = Date.now();
       setRecordingPhase('recording');
-    } catch {
+    } catch (error) {
       if (attempt !== captureAttemptRef.current) return;
-      alert('マイクの使用が許可されていません。');
       releaseMic();
+      setRecordingFailure(micFailure(error));
       channel.send({ type: 'hospital_speaking_stop' });
     }
   }, [channel, getQueue, releaseMic, setRecordingPhase]);
@@ -404,7 +481,18 @@ export default function HospitalApp() {
     isAudioBlockedRef.current = false;
     lastQueuedSeqRef.current = 0;
     callerTextsRef.current.clear();
+    unsentReportsRef.current = [];
   }, [stopCallMedia]);
+
+  /** 切断中に送れなかった再生の報告を、同じ席に戻ったときだけ送る。サーバーは終わった文の「開始」を無視する。 */
+  const flushUnsentReports = useCallback((seatToken: string) => {
+    const unsent = unsentReportsRef.current;
+    unsentReportsRef.current = [];
+    for (const report of unsent) {
+      if (report.seatToken !== seatToken) continue;
+      channel.send({ type: 'speech_playback', seq: report.seq, status: report.status, engine: report.engine });
+    }
+  }, [channel]);
 
   /** サーバーの状態に画面を合わせる。切断中に送られた文は、ここから読み上げる。 */
   const applySnapshot = useCallback((snapshot: CallSnapshot, seatToken: string) => {
@@ -455,6 +543,7 @@ export default function HospitalApp() {
     } else if (data.type === 'speech_status') {
       setSpeechStatus(data.status);
     } else if (data.type === 'call_joined') {
+      flushUnsentReports(data.seatToken);
       applySnapshot(data.snapshot, data.seatToken);
     } else if (data.type === 'call_error') {
       const notice = CALL_ERROR_NOTICES[data.code];
@@ -502,7 +591,17 @@ export default function HospitalApp() {
       releaseMic();
       setCallState('ended');
     }
-  }, [addCaption, applySnapshot, beginCapture, getQueue, queueSpeech, releaseMic, returnToLobby, stopRingtone]);
+  }, [
+    addCaption,
+    applySnapshot,
+    beginCapture,
+    flushUnsentReports,
+    getQueue,
+    queueSpeech,
+    releaseMic,
+    returnToLobby,
+    stopRingtone,
+  ]);
 
   const isConnected = useCallSocket(channel, {
     onMessage: handleServerMessage,
@@ -630,6 +729,12 @@ export default function HospitalApp() {
   // マイクを開くのはサーバーが受け付けた後。使えないときに許可を求めず、音声も送らない。
   const startRecording = (): boolean => {
     if (recordingPhaseRef.current !== 'idle' || !canStartRecording || getQueue().isPlaying) return false;
+    // マイクを使えないページでは、サーバーに録音を頼まない。理由を出して、開き直してもらう。
+    const unavailable = micUnavailableReason();
+    if (unavailable) {
+      setRecordingFailure(unavailable);
+      return false;
+    }
     setRecordingFailure(null);
     setRecordingPhase('awaiting_server');
     if (!channel.send({ type: 'hospital_speaking_start' })) {
@@ -641,8 +746,20 @@ export default function HospitalApp() {
 
   // 終える合図は1回の操作で何度も届くことがある（離す・捕捉の解除・クリック）。2回目は何もしない。
   const stopRecording = () => {
-    if (recordingPhaseRef.current === 'idle') return;
+    const phase = recordingPhaseRef.current;
+    if (phase === 'idle') return;
+    // 録音中と表示してからしばらくたっても、マイクの音が1つも届いていない。認識しても空なので結果を待たずに取り消し、
+    // 「聞き取れなかった」ではなくマイクの問題として知らせる。大きな声で言い直しても直らないため。
+    const noAudio =
+      phase === 'recording' &&
+      capturedSamplesRef.current === 0 &&
+      Date.now() - recordingSinceRef.current >= NO_AUDIO_NOTICE_MS;
     releaseMic();
+    if (noAudio) {
+      setRecordingFailure('no_audio');
+      channel.send({ type: 'hospital_speaking_stop' });
+      return;
+    }
     channel.send({ type: 'hospital_speech_end' });
   };
 

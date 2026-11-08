@@ -50,6 +50,7 @@ class FakeUtterance {
 
 class FakeAudioContext {
   state = 'running';
+  sampleRate = 48000;
   destination = {};
   close = vi.fn(async () => {});
   createMediaStreamSource() {
@@ -297,6 +298,41 @@ describe('読み直しと再接続', () => {
     expect(socket().sentOfType('speech_audio_request')).toEqual([{ type: 'speech_audio_request', seq: 3 }]);
     receive({ type: 'speech_audio', seq: 3, audio: audioOf('while-away'), mimeType: 'audio/mpeg' });
     expect(decoded.at(-1)).toBe('while-away');
+  });
+
+  /** 鳴らしている途中で接続が切れ、切れている間に読み終える。 */
+  function finishWhileDisconnected() {
+    answer();
+    receive({ type: 'answer_call', text: 'あいさつ', seq: 1 });
+    receive({ type: 'speech_audio', seq: 1, audio: audioOf('greeting'), mimeType: 'audio/mpeg' });
+    act(() => audio().onplaying?.());
+    act(() => socket().drop());
+    act(() => audio().onended?.());
+    act(() => {
+      socket().readyState = FakeWebSocket.OPEN;
+      socket().onopen?.();
+    });
+  }
+
+  // 送れないまま捨てると、本人の画面がその文を「読み上げ中」のまま止める。
+  it('切断中に読み終えた報告は、同じ席に戻ったら送る', () => {
+    finishWhileDisconnected();
+    expect(reports().map(({ status }) => status)).toEqual(['started']);
+
+    receive(callJoined('hospital', { turns: [{ seq: 1, sender: '患者', text: 'あいさつ', origin: 'greeting' }] }));
+
+    expect(reports()).toEqual([
+      { type: 'speech_playback', seq: 1, status: 'started', engine: 'cloud' },
+      { type: 'speech_playback', seq: 1, status: 'ended', engine: 'cloud' },
+    ]);
+  });
+
+  it('別の通話に入り直したら、前の通話の報告は送らない', () => {
+    finishWhileDisconnected();
+
+    receive(callJoined('hospital', { phase: 'ringing' }, 'another-seat-token'));
+
+    expect(reports().map(({ status }) => status)).toEqual(['started']);
   });
 });
 

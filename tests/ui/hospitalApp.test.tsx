@@ -14,8 +14,12 @@ const PREPARING_LABEL = '録音を準備しています。まだ話さないで�
 
 class FakeAudioContext {
   static instances: FakeAudioContext[] = [];
+  /** 作った直後の状態。操作の外で作ると止まったまま始まるブラウザ（iPhoneなど）を再現する。 */
+  static initialState = 'running';
 
-  state = 'running';
+  state = FakeAudioContext.initialState;
+  // 多くの端末の標準のレート。画面はこのレートで受け取り、16kHzに変えて送る。
+  sampleRate = 48000;
   destination = {};
   processor = {
     connect: vi.fn(),
@@ -25,8 +29,11 @@ class FakeAudioContext {
   close = vi.fn(async () => {
     this.state = 'closed';
   });
+  resume = vi.fn(async () => {
+    this.state = 'running';
+  });
 
-  constructor() {
+  constructor(public options?: AudioContextOptions) {
     FakeAudioContext.instances.push(this);
   }
 
@@ -96,13 +103,20 @@ function holdLongEnough() {
   vi.setSystemTime(Date.now() + 1_000);
 }
 
+/** ブラウザの ScriptProcessor の1回分（4096サンプル、48kHzで約85ミリ秒）のマイクの音を届ける。 */
+const MIC_CHUNK = 4096;
+
 function speakIntoMic() {
   act(() =>
     micProcessor().onaudioprocess?.({
-      inputBuffer: { getChannelData: () => new Float32Array([0.25, -0.25]) },
+      inputBuffer: { getChannelData: () => new Float32Array(MIC_CHUNK).fill(0.25) },
     }),
   );
 }
+
+const MIC_DENIED_NOTICE = 'マイクの使用が許可されていません。ブラウザの設定で、このサイトのマイクを許可してください。';
+const NO_AUDIO_NOTICE =
+  'マイクの音を受け取れませんでした。相手には何も届いていません。もう一度押してください。続くときは画面を読み込み直してください。';
 
 describe('病院の録音', () => {
   let track: { stop: ReturnType<typeof vi.fn> };
@@ -111,6 +125,7 @@ describe('病院の録音', () => {
   beforeEach(() => {
     FakeWebSocket.instances = [];
     FakeAudioContext.instances = [];
+    FakeAudioContext.initialState = 'running';
     window.sessionStorage.clear();
     window.history.replaceState(null, '', '/hospital');
     vi.stubGlobal('WebSocket', FakeWebSocket);
@@ -130,6 +145,8 @@ describe('病院の録音', () => {
     cleanup();
     vi.unstubAllGlobals();
     vi.useRealTimers();
+    // ほかの describe の偽物に持ち越さない。
+    FakeAudioContext.initialState = 'running';
   });
 
   describe('録音できない状態を押す前に知らせる', () => {
@@ -191,6 +208,7 @@ describe('病院の録音', () => {
     // 無効にすると mouseup が届かず、指を離しても録音が止まらなくなる。
     it('録音中に相手が話し始めても、指を離して止められる', async () => {
       await renderRecordingCall();
+      speakIntoMic();
 
       receive({ type: 'patient_speaking_status', isSpeaking: true });
       holdLongEnough();
@@ -248,6 +266,7 @@ describe('病院の録音', () => {
 
     it('指を離すとマイクを閉じ、発話の終わりを送る', async () => {
       await renderRecordingCall();
+      speakIntoMic();
 
       holdLongEnough();
 
@@ -265,6 +284,52 @@ describe('病院の録音', () => {
       await serverAccepts();
 
       expect(getUserMedia).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('端末の標準のレートで受け取り、16kHzにして送る', () => {
+    it('マイクの部品にはレートを指定しない（iPhoneで音が欠ける報告があるため）', async () => {
+      await renderRecordingCall();
+
+      expect(FakeAudioContext.instances.at(-1)!.options).toBeUndefined();
+    });
+
+    it('48kHzで受け取った音を、16kHzの16bitにして送る', async () => {
+      await renderRecordingCall();
+
+      speakIntoMic();
+      speakIntoMic();
+
+      const samples = socket().audio.reduce((sum, chunk) => sum + chunk.byteLength / 2, 0);
+      expect(Math.abs(samples - (2 * MIC_CHUNK) / 3)).toBeLessThanOrEqual(1);
+      // 0.25 の一定の音は、16bitでも同じ大きさ（フィルタが落ち着いた後）。
+      const last = new Int16Array(socket().audio.at(-1)!);
+      expect(Math.abs(last[last.length - 1] - 0.25 * 0x7fff)).toBeLessThanOrEqual(1);
+    });
+
+    it('止まったまま始まったマイクの部品は、再開してから録音中と表示する', async () => {
+      FakeAudioContext.initialState = 'suspended';
+      renderConnectedCall();
+      fireEvent.pointerDown(ptt());
+
+      await serverAccepts();
+      await act(async () => {});
+
+      expect(FakeAudioContext.instances.at(-1)!.resume).toHaveBeenCalled();
+      expect(pttLabel()).toBe(RECORDING_LABEL);
+    });
+
+    it('マイクの音が届かないまま終えたら、マイクの問題として知らせ、認識を取り消す', async () => {
+      await renderRecordingCall();
+
+      holdLongEnough();
+      fireEvent.pointerUp(ptt());
+
+      expect(failureNotice()).toBe(NO_AUDIO_NOTICE);
+      expect(socket().sentOfType('hospital_speech_end')).toEqual([]);
+      expect(socket().sentOfType('hospital_speaking_stop')).toHaveLength(1);
+      expect(track.stop).toHaveBeenCalled();
+      expect(pttLabel()).toBe('押すと録音を始めます');
     });
   });
 
@@ -338,6 +403,7 @@ describe('病院の録音', () => {
 
     it('話したのに文字にならなかったら、届いていないと伝える', async () => {
       await renderRecordingCall();
+      speakIntoMic();
       holdLongEnough();
       fireEvent.pointerUp(ptt());
 
@@ -350,6 +416,7 @@ describe('病院の録音', () => {
 
     it('次の録音を始めた後に届いた「聞き取れなかった」は出さず、録音も止めない', async () => {
       await renderRecordingCall();
+      speakIntoMic();
       holdLongEnough();
       fireEvent.pointerUp(ptt());
       fireEvent.pointerDown(ptt());
@@ -362,16 +429,52 @@ describe('病院の録音', () => {
       expect(pttLabel()).toBe(RECORDING_LABEL);
     });
 
-    it('マイクを使えなければ録音を取り消す', async () => {
-      getUserMedia.mockRejectedValue(new Error('denied'));
+    it('マイクを使えなければ録音を取り消し、理由を画面の中に出す', async () => {
+      getUserMedia.mockRejectedValue(Object.assign(new Error('denied'), { name: 'NotAllowedError' }));
       renderConnectedCall();
       fireEvent.pointerDown(ptt());
 
       await serverAccepts();
 
-      expect(alert).toHaveBeenCalledWith('マイクの使用が許可されていません。');
+      expect(failureNotice()).toBe(MIC_DENIED_NOTICE);
+      // アプリ内のブラウザでは alert が出ないことがあり、出ると通話の画面が隠れる。
+      expect(alert).not.toHaveBeenCalled();
       expect(socket().sentOfType('hospital_speaking_stop')).toHaveLength(1);
       expect(pttLabel()).toBe('押すと録音を始めます');
+    });
+
+    it.each([
+      ['NotFoundError', 'マイクが見つかりません。マイクを接続してから、もう一度押してください。'],
+      ['NotReadableError', 'マイクを使えませんでした。ほかのアプリがマイクを使っていないか確かめてください。'],
+      ['TypeError', 'マイクを開けませんでした。もう一度押してください。'],
+    ])('マイクのエラー（%s）に合わせて知らせる', async (name, notice) => {
+      getUserMedia.mockRejectedValue(Object.assign(new Error(name), { name }));
+      renderConnectedCall();
+      fireEvent.pointerDown(ptt());
+
+      await serverAccepts();
+
+      expect(failureNotice()).toBe(notice);
+    });
+
+    it('マイクを使えないブラウザでは、サーバーに録音を頼まず理由を出す', () => {
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: undefined });
+      renderConnectedCall();
+
+      fireEvent.pointerDown(ptt());
+
+      expect(startRequests()).toEqual([]);
+      expect(failureNotice()).toBe('このブラウザではマイクを使えません。SafariかChromeで開き直してください。');
+    });
+
+    it('https でないページでは、サーバーに録音を頼まず理由を出す', () => {
+      vi.stubGlobal('isSecureContext', false);
+      renderConnectedCall();
+
+      fireEvent.pointerDown(ptt());
+
+      expect(startRequests()).toEqual([]);
+      expect(failureNotice()).toBe('このページではマイクを使えません。https:// で始まるアドレスで開いてください。');
     });
   });
 
@@ -972,6 +1075,7 @@ describe('相手の画面の字幕と読み上げの報告', () => {
 
     fireEvent.keyDown(ptt(), { key: ' ', repeat: true });
     expect(startRequests()).toHaveLength(1);
+    speakIntoMic();
 
     holdLongEnough();
     fireEvent.keyUp(ptt(), { key: ' ' });
@@ -998,6 +1102,7 @@ describe('相手の画面の字幕と読み上げの報告', () => {
     renderConnectedCall();
     fireEvent.pointerDown(ptt());
     await serverAccepts();
+    speakIntoMic();
 
     holdLongEnough();
     fireEvent.pointerUp(ptt());
@@ -1167,6 +1272,7 @@ describe('レビュー指摘: 読み上げと録音の整合、録音の操作',
 
     fireEvent.pointerDown(ptt());
     await serverAccepts();
+    speakIntoMic();
     vi.setSystemTime(Date.now() + 1_000);
     fireEvent.pointerUp(ptt());
 
