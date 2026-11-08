@@ -2,6 +2,12 @@ import type { AppointmentDraft, AppointmentField } from './callProtocol';
 
 const TIME_ZONE = 'Asia/Tokyo';
 const CALENDAR_BASE_URL = 'https://calendar.google.com/calendar/render';
+/** Googleカレンダーの画面。本人が自分の予定を見るために開く。予定は読まない。 */
+const CALENDAR_HOME_URL = 'https://calendar.google.com/calendar/r';
+/** Maps URLs の検索（APIキー不要）。https://developers.google.com/maps/documentation/urls/get-started */
+const MAPS_SEARCH_URL = 'https://www.google.com/maps/search/';
+/** URLは2,048文字まで。日本語は1文字9バイト分に広がるので、検索語は短く切る。 */
+const MAX_MAP_QUERY_LENGTH = 100;
 const DEFAULT_DURATION_MINUTES = 60;
 const LAST_MINUTE_OF_DAY = 23 * 60 + 59;
 
@@ -131,6 +137,23 @@ function resolveEndTime(startTime: string, endTime: string | null): string {
 
 function toCalendarStamp(date: string, time: string): string {
   return `${date.replaceAll('-', '')}T${time.replace(':', '')}00`;
+}
+
+/**
+ * Googleマップで場所を検索するURL。検索結果を本人が確かめるためのもので、施設や住所を確定しない。
+ * 場所が空なら null。
+ */
+export function buildMapsSearchUrl(location: string): string | null {
+  const query = location.trim().slice(0, MAX_MAP_QUERY_LENGTH);
+  if (!query) return null;
+  return `${MAPS_SEARCH_URL}?${new URLSearchParams({ api: '1', query }).toString()}`;
+}
+
+/** Googleカレンダーを開くURL。日付があればその日の表示にする。本人がGoogleにログインして自分で見る。 */
+export function buildCalendarDayUrl(date: string | null): string {
+  if (!date || !isValidDate(date)) return CALENDAR_HOME_URL;
+  const [year, month, day] = date.split('-').map(Number);
+  return `${CALENDAR_HOME_URL}/day/${year}/${month}/${day}`;
 }
 
 /** Googleカレンダーの作成画面を開くURL。最後に保存するのは本人。 */

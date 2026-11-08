@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import type { ReactNode } from 'react';
-import { CalendarPlus } from 'lucide-react';
+import { CalendarDays, CalendarPlus, MapPin } from 'lucide-react';
 import { MOCK_AI_MODEL } from '@/lib/aiMeta';
-import { buildCalendarUrl, isReadyForCalendar } from '@/lib/appointment';
+import { buildCalendarDayUrl, buildCalendarUrl, buildMapsSearchUrl, isReadyForCalendar } from '@/lib/appointment';
 import type { AppointmentDraft, AppointmentField } from '@/lib/callProtocol';
 import { buttonClass } from './ui';
 
@@ -57,6 +57,8 @@ export function AppointmentReviewCard({ appointment, source }: AppointmentReview
   const [draft, setDraft] = useState(appointment);
   const update = (patch: Partial<AppointmentDraft>) => setDraft((prev) => ({ ...prev, ...patch }));
   const ready = isReadyForCalendar(draft);
+  // 本人が直した場所で検索する。カレンダーに追加するときも同じ値を使う。
+  const mapsUrl = buildMapsSearchUrl(draft.location);
 
   const aiFields = new Set<AppointmentField>(source.kind === 'ai' ? (appointment.aiFields ?? []) : []);
   // AIが入れた値のまま残っている項目だけに印を付ける。
@@ -132,6 +134,22 @@ export function AppointmentReviewCard({ appointment, source }: AppointmentReview
               className={INPUT_CLASS}
             />
           </Field>
+          {mapsUrl && (
+            <p className="mt-2 text-[13px] leading-relaxed text-ink-2">
+              <a
+                href={mapsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex min-h-11 items-center gap-1.5 font-bold text-voice-strong underline underline-offset-2"
+              >
+                <MapPin className="size-4 shrink-0" aria-hidden />
+                Googleマップで「{draft.location.trim()}」を検索
+              </a>
+              <span className="block">
+                検索結果が目的の場所か確かめてください。施設や住所は自動では決めません。
+              </span>
+            </p>
+          )}
         </div>
         <div className="sm:col-span-2">
           <Field label="メモ（持ち物など）" fromAi={fromAi('details')}>
@@ -161,6 +179,15 @@ export function AppointmentReviewCard({ appointment, source }: AppointmentReview
             : '日付と開始時刻を入力すると追加できます'}
         </p>
       </div>
+      <a
+        href={buildCalendarDayUrl(draft.date)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={buttonClass('quiet', 'md', '-ml-4')}
+      >
+        <CalendarDays className="size-4" aria-hidden />
+        {draft.date ? 'この日の予定をGoogleカレンダーで見る' : 'Googleカレンダーで予定を見る'}
+      </a>
     </div>
   );
 }

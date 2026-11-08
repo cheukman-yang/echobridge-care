@@ -527,6 +527,36 @@ describe('通話後の予定の確認', () => {
     expect(url.searchParams.get('dates')).toBe('20261112T150000/20261112T160000');
   });
 
+  it('場所はGoogleマップで確かめられ、本人が直した場所で検索し、カレンダーにも同じ場所を渡す', () => {
+    const open = vi.fn();
+    vi.stubGlobal('open', open);
+    endCall({ ...unknown, date: '2026-11-12', startTime: '14:30', location: '駅前の改札' }, GEMINI);
+
+    const mapsLink = () => screen.getByRole('link', { name: /Googleマップで/ }) as HTMLAnchorElement;
+    expect(new URL(mapsLink().href).searchParams.get('query')).toBe('駅前の改札');
+    expect(mapsLink().target).toBe('_blank');
+    expect(mapsLink().rel).toContain('noopener');
+
+    fireEvent.change(screen.getByLabelText(/場所/), { target: { value: '北口の改札' } });
+    expect(new URL(mapsLink().href).searchParams.get('query')).toBe('北口の改札');
+
+    fireEvent.click(calendarButton());
+    expect(new URL(String(open.mock.calls[0][0])).searchParams.get('location')).toBe('北口の改札');
+  });
+
+  it('場所が空なら地図のリンクを出さない', () => {
+    endCall({ ...unknown, date: '2026-11-12', startTime: '14:30', location: '' }, GEMINI);
+
+    expect(screen.queryByRole('link', { name: /Googleマップで/ })).toBeNull();
+  });
+
+  it('予定の日のGoogleカレンダーを開ける。予定は読まない', () => {
+    endCall({ ...unknown, date: '2026-11-12', startTime: '14:30' }, GEMINI);
+
+    const link = screen.getByRole('link', { name: 'この日の予定をGoogleカレンダーで見る' }) as HTMLAnchorElement;
+    expect(link.href).toBe('https://calendar.google.com/calendar/r/day/2026/11/12');
+  });
+
   it('通話の記録を見返せる', () => {
     renderConnectedCall();
     receive({ type: 'transcript_final', text: '水曜の10時です', seq: 2 });

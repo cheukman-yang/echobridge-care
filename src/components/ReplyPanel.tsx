@@ -1,5 +1,6 @@
 import type { KeyboardEvent } from 'react';
-import { LoaderCircle, Send, Sparkles } from 'lucide-react';
+import { CalendarDays, LoaderCircle, Send, Sparkles } from 'lucide-react';
+import { buildCalendarDayUrl } from '@/lib/appointment';
 import type { AiMeta } from '@/lib/aiMeta';
 import { MAX_PATIENT_TEXT_LENGTH } from '@/lib/callProtocol';
 import type { SuggestionItem } from '@/lib/callProtocol';
@@ -130,6 +131,16 @@ export function ReplyPanel(props: ReplyPanelProps) {
                   相手が話し終えると、ここに3つの候補が出ます。
                 </p>
               )}
+              {/* 日時を提案されたときに、自分の予定を確かめられるようにする。EchoBridgeは予定を読まない。 */}
+              <a
+                href={buildCalendarDayUrl(null)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={buttonClass('quiet', 'md', '-ml-4')}
+              >
+                <CalendarDays className="size-4" aria-hidden />
+                自分の予定をGoogleカレンダーで見る
+              </a>
             </section>
 
 

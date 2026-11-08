@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildCalendarDayUrl,
   buildCalendarUrl,
+  buildMapsSearchUrl,
   formatTokyoNow,
   hasScheduleHint,
   isReadyForCalendar,
@@ -152,5 +154,35 @@ describe('場所と予定の有無', () => {
     expect(hasScheduleHint(empty)).toBe(false);
     expect(hasScheduleHint({ ...empty, date: '2026-11-12' })).toBe(true);
     expect(hasScheduleHint({ ...empty, startTime: '10:00' })).toBe(true);
+  });
+});
+
+describe('Googleマップの検索URL', () => {
+  it('公式のMaps URLsの形で、場所の名前をそのまま検索語にする', () => {
+    const url = new URL(buildMapsSearchUrl('  ひまわり医院 本町2丁目  ') ?? '');
+    expect(`${url.origin}${url.pathname}`).toBe('https://www.google.com/maps/search/');
+    expect(url.searchParams.get('api')).toBe('1');
+    expect(url.searchParams.get('query')).toBe('ひまわり医院 本町2丁目');
+  });
+
+  it('場所が空なら作らない', () => {
+    expect(buildMapsSearchUrl('   ')).toBeNull();
+  });
+
+  it('長い場所は切り詰め、URLの上限（2,048文字）を超えない', () => {
+    const url = buildMapsSearchUrl('長'.repeat(500)) ?? '';
+    expect(url.length).toBeLessThanOrEqual(2048);
+    expect(new URL(url).searchParams.get('query')).toHaveLength(100);
+  });
+});
+
+describe('Googleカレンダーを開くURL', () => {
+  it('日付があればその日の表示にする', () => {
+    expect(buildCalendarDayUrl('2026-11-09')).toBe('https://calendar.google.com/calendar/r/day/2026/11/9');
+  });
+
+  it('日付がないか不正なら、カレンダーの画面を開く', () => {
+    expect(buildCalendarDayUrl(null)).toBe('https://calendar.google.com/calendar/r');
+    expect(buildCalendarDayUrl('2026-02-30')).toBe('https://calendar.google.com/calendar/r');
   });
 });
