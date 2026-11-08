@@ -83,7 +83,7 @@ describe('発信前の確認', () => {
     const notice = screen.getByTestId('demo-data-notice');
     expect(notice.textContent).toContain('実在の個人情報は入力しないでください');
     expect(notice.textContent).toContain('架空の内容');
-    expect(notice.textContent).toContain('Google Cloud（Speech-to-Text、Gemini）');
+    expect(notice.textContent).toContain('Google Cloud（Speech-to-Text、Gemini、Text-to-Speech）');
   });
 });
 
@@ -726,7 +726,7 @@ describe('発信と招待', () => {
     placeCall();
 
     expect(socket().sentOfType('start_call')).toEqual([
-      { type: 'start_call', intent: '内科の初診予約', purpose: 'medical', partnerName: '' },
+      { type: 'start_call', intent: '内科の初診予約', purpose: 'medical', partnerName: '', voice: 'female' },
     ]);
     expect(screen.getByText('通話を準備しています...')).toBeTruthy();
     expect(screen.queryByTestId('invite-code')).toBeNull();
@@ -1087,7 +1087,47 @@ describe('通話の目的と相手の名前', () => {
     fireEvent.click(screen.getByRole('button', { name: /発信する/ }));
 
     expect(socket().sentOfType('start_call')).toEqual([
-      { type: 'start_call', intent: '土曜の待ち合わせ', purpose: 'general', partnerName: '佐藤さん' },
+      { type: 'start_call', intent: '土曜の待ち合わせ', purpose: 'general', partnerName: '佐藤さん', voice: 'female' },
+    ]);
+  });
+
+  it('「例を入力」は空の欄にだけ、目的に合った架空の例を入れる', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+    const partnerField = screen.getByLabelText(/相手の名前/) as HTMLInputElement;
+    expect(partnerField.value).toBe('');
+    expect((intentField() as HTMLTextAreaElement).value).toBe('');
+
+    fireEvent.click(screen.getByRole('radio', { name: /日常の連絡/ }));
+    fireEvent.change(partnerField, { target: { value: '佐藤さん' } });
+    fireEvent.click(screen.getByRole('button', { name: '例を入力' }));
+
+    expect(partnerField.value).toBe('佐藤さん');
+    expect((intentField() as HTMLTextAreaElement).value).toBe('土曜日の待ち合わせ時間を決めたいです');
+    expect(screen.getByRole('button', { name: '例を入力' })).toHaveProperty('disabled', true);
+  });
+
+  it('用件が空のあいだは、発信できない理由を出す', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+
+    expect(screen.getByRole('button', { name: /発信する/ })).toHaveProperty('disabled', true);
+    expect(screen.getByText('最初に伝える用件を入力すると発信できます。')).toBeTruthy();
+
+    fireEvent.change(intentField(), { target: { value: '内科の予約' } });
+    expect(screen.queryByText('最初に伝える用件を入力すると発信できます。')).toBeNull();
+  });
+
+  it('選んだ読み上げの声を発信に含める', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+    fireEvent.change(intentField(), { target: { value: '内科の予約' } });
+
+    fireEvent.click(screen.getByRole('radio', { name: '男性の声' }));
+    fireEvent.click(screen.getByRole('button', { name: /発信する/ }));
+
+    expect(socket().sentOfType('start_call')).toEqual([
+      { type: 'start_call', intent: '内科の予約', purpose: 'medical', partnerName: '', voice: 'male' },
     ]);
   });
 
@@ -1151,10 +1191,10 @@ describe('相手の端末での読み上げの状態', () => {
     expect(log.getAllByText('送信済み').length).toBeGreaterThan(0);
 
     receive({ type: 'speech_playback', seq: 2, status: 'started', engine: 'device' });
-    expect(log.getByText('読み上げ中（相手の端末の音声）')).toBeTruthy();
+    expect(log.getByText('読み上げ中（端末の読み上げ機能）')).toBeTruthy();
 
     receive({ type: 'speech_playback', seq: 2, status: 'ended', engine: 'device' });
-    expect(log.getByText('相手の端末で再生済み（相手の端末の音声）')).toBeTruthy();
+    expect(log.getByText('相手の端末で再生済み（端末の読み上げ機能）')).toBeTruthy();
   });
 
   it('読み上げられなかったら、本人に知らせる', () => {
@@ -1530,6 +1570,19 @@ describe('登録した文（カスタム返答）', () => {
 
     expect(screen.getByText(SELF_INTRO)).toBeTruthy();
     expect(socket().sentOfType('patient_confirmed_speech')).toEqual([]);
+  });
+
+  it('入力欄が空なら例文を入れられ、本人が直してから登録する。入れただけでは登録しない', () => {
+    render(<PatientApp />);
+    act(() => socket().open());
+    fireEvent.click(screen.getByText('よく使う文の登録（任意）'));
+    const field = screen.getByRole('textbox', { name: '新しい文を登録' }) as HTMLTextAreaElement;
+
+    fireEvent.click(screen.getByRole('button', { name: '例文を入れる' }));
+
+    expect(field.value).toContain('AIの音声でお話ししています');
+    expect(window.localStorage.getItem('echobridge.customPhrases.v1')).toBeNull();
+    expect(screen.getByRole('button', { name: '例文を入れる' })).toHaveProperty('disabled', true);
   });
 });
 

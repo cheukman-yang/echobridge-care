@@ -20,8 +20,8 @@ export function DemoDataNotice({ side, className }: DemoDataNoticeProps) {
     >
       {side === 'user' ? (
         <p>
-          これはデモ版です。氏名・病名・保険証の番号などは使わず、架空の内容でお試しください。入力した文と相手の声は、文字起こしと返答の作成のためにGoogle
-          Cloud（Speech-to-Text、Gemini）で処理されます。
+          これはデモ版です。氏名・病名・保険証の番号などは使わず、架空の内容でお試しください。入力した文と相手の声は、文字起こし・返答の作成・読み上げのためにGoogle
+          Cloud（Speech-to-Text、Gemini、Text-to-Speech）で処理されます。
         </p>
       ) : (
         <p>

@@ -17,6 +17,9 @@ export interface CallPurposeProfile {
   description: string;
   partnerPlaceholder: string;
   intentPlaceholder: string;
+  /** 「例を入力」で入れる架空の相手の名前と用件。実在の情報は使わない。 */
+  samplePartnerName: string;
+  sampleIntent: string;
   /** 相手が応答したとき、用件の前に読み上げる文。 */
   greetingPrefix: string;
   /** 用件が空でAIも題名を返さなかったときの、予定の題名。 */
@@ -31,6 +34,8 @@ export const CALL_PURPOSE_PROFILES: Record<CallPurpose, CallPurposeProfile> = {
     description: '病院や薬局への予約、問い合わせ',
     partnerPlaceholder: '例：ひまわり医院',
     intentPlaceholder: '例：内科の初診予約をしたいです',
+    samplePartnerName: 'ひまわり医院',
+    sampleIntent: '内科の初診予約をしたいです',
     greetingPrefix: 'お忙しいところ恐れ入ります。AI音声アシスタントを介してお電話しております。',
     defaultEventTitle: '通院の予定',
     partnerIsPlace: true,
@@ -40,6 +45,8 @@ export const CALL_PURPOSE_PROFILES: Record<CallPurpose, CallPurposeProfile> = {
     description: '家族や知人、お店などへの連絡',
     partnerPlaceholder: '例：母、駅前の美容室',
     intentPlaceholder: '例：土曜日の待ち合わせ時間を決めたいです',
+    samplePartnerName: '母',
+    sampleIntent: '土曜日の待ち合わせ時間を決めたいです',
     greetingPrefix: 'もしもし。AI音声アシスタントを使ってお話ししています。',
     defaultEventTitle: '予定',
     partnerIsPlace: false,

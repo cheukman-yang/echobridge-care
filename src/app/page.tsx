@@ -23,7 +23,7 @@ import {
   RECONNECTING_NOTICE,
   SEAT_TAKEN_NOTICE,
 } from '@/lib/callNotices';
-import { TYPING_NOTICE_TEXT, keepsSuggestions } from '@/lib/callProtocol';
+import { DEFAULT_SPEECH_VOICE, TYPING_NOTICE_TEXT, keepsSuggestions } from '@/lib/callProtocol';
 import type {
   AppointmentResult,
   CallInvite,
@@ -33,6 +33,7 @@ import type {
   ServerMessage,
   SpeechOrigin,
   SpeechStatus,
+  SpeechVoice,
   SuggestionItem,
 } from '@/lib/callProtocol';
 import { deliveryFromTurns } from '@/lib/speechDelivery';
@@ -92,6 +93,7 @@ export default function PatientApp() {
   const [intent, setIntent] = useState('');
   const [purpose, setPurpose] = useState<CallPurpose>(DEFAULT_CALL_PURPOSE);
   const [partnerName, setPartnerName] = useState('');
+  const [voice, setVoice] = useState<SpeechVoice>(DEFAULT_SPEECH_VOICE);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // 音声の作成と、相手の端末での再生の状態。発言のidごとに持ち、発言の表示より先に届いても失わない。
   const [delivery, setDelivery] = useState<Record<string, SpeechDelivery>>({});
@@ -352,7 +354,7 @@ export default function PatientApp() {
 
   const handleStartCall = () => {
     if (!intent.trim()) return;
-    if (!channel.send({ type: 'start_call', intent, purpose, partnerName: partnerName.trim() })) {
+    if (!channel.send({ type: 'start_call', intent, purpose, partnerName: partnerName.trim(), voice })) {
       setCallNotice('サーバーに接続できていないため、発信できませんでした。');
       return;
     }
@@ -555,10 +557,12 @@ export default function PatientApp() {
                 purpose={purpose}
                 partnerName={partnerName}
                 intent={intent}
+                voice={voice}
                 isConnected={isConnected}
                 onPurposeChange={setPurpose}
                 onPartnerNameChange={setPartnerName}
                 onIntentChange={setIntent}
+                onVoiceChange={setVoice}
                 onStart={handleStartCall}
               />
               <div className="space-y-6 lg:pt-14">

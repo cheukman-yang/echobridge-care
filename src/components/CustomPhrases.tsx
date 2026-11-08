@@ -1,6 +1,6 @@
 import { useState, useSyncExternalStore } from 'react';
 import type { FormEvent } from 'react';
-import { Pencil, Send, Trash2 } from 'lucide-react';
+import { Pencil, Send, Trash2, Wand2 } from 'lucide-react';
 import { MAX_PATIENT_TEXT_LENGTH } from '@/lib/callProtocol';
 import {
   MAX_CUSTOM_PHRASES,
@@ -27,6 +27,9 @@ const ERROR_LABELS = {
   duplicate: '同じ文がすでに登録されています。',
   full: `登録できるのは${MAX_CUSTOM_PHRASES}件までです。使わない文を削除してください。`,
 } as const;
+
+/** 「例文を入れる」で入れる文。個人の事実を含めない。 */
+const EXAMPLE_PHRASE = '発話に障害があるため、AIの音声でお話ししています。ゆっくりお話しいただけると助かります。';
 
 const TEXTAREA_CLASS =
   'block w-full resize-none rounded-lg border border-line-strong bg-surface px-3.5 py-2.5 text-[16px] leading-relaxed text-ink placeholder:text-ink-2/70 focus:border-voice';
@@ -138,7 +141,7 @@ function PhraseEditor({ phrases, onDone }: { phrases: CustomPhrase[]; onDone?: (
             setDraft(event.target.value);
             setError(null);
           }}
-          placeholder="例：発話に障害があるため、AIの音声でお話ししています。"
+          placeholder={`例：${EXAMPLE_PHRASE}`}
           className={TEXTAREA_CLASS}
         />
         {error && (
@@ -150,9 +153,22 @@ function PhraseEditor({ phrases, onDone }: { phrases: CustomPhrase[]; onDone?: (
           <button type="submit" className={buttonClass('primary', 'md')}>
             {editingId ? '直した文を保存' : '登録する'}
           </button>
-          {editingId && (
+          {editingId ? (
             <button type="button" onClick={resetForm} className={buttonClass('secondary', 'md')}>
               直すのをやめる
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setDraft(EXAMPLE_PHRASE);
+                setError(null);
+              }}
+              disabled={draft.trim() !== ''}
+              className={buttonClass('quiet', 'md')}
+            >
+              <Wand2 className="size-4" aria-hidden />
+              例文を入れる
             </button>
           )}
         </div>

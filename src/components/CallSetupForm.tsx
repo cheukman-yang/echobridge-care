@@ -1,6 +1,7 @@
 import type { FormEvent } from 'react';
-import { Phone } from 'lucide-react';
-import { MAX_PATIENT_TEXT_LENGTH, buildGreeting } from '@/lib/callProtocol';
+import { Phone, Wand2 } from 'lucide-react';
+import { MAX_PATIENT_TEXT_LENGTH, SPEECH_VOICES, buildGreeting } from '@/lib/callProtocol';
+import type { SpeechVoice } from '@/lib/callProtocol';
 import { CALL_PURPOSES, CALL_PURPOSE_PROFILES, MAX_PARTNER_NAME_LENGTH } from '@/lib/callPurpose';
 import type { CallPurpose } from '@/lib/callPurpose';
 import { DemoDataNotice } from './DemoDataNotice';
@@ -10,12 +11,19 @@ interface CallSetupFormProps {
   purpose: CallPurpose;
   partnerName: string;
   intent: string;
+  voice: SpeechVoice;
   isConnected: boolean;
   onPurposeChange(purpose: CallPurpose): void;
   onPartnerNameChange(value: string): void;
   onIntentChange(value: string): void;
+  onVoiceChange(voice: SpeechVoice): void;
   onStart(): void;
 }
+
+const VOICE_LABELS: Record<SpeechVoice, string> = {
+  female: '女性の声',
+  male: '男性の声',
+};
 
 const FIELD_CLASS =
   'w-full rounded-lg border border-line-strong bg-surface px-3.5 py-3 text-base text-ink placeholder:text-ink-2/70 focus:border-voice';
@@ -25,14 +33,28 @@ export function CallSetupForm({
   purpose,
   partnerName,
   intent,
+  voice,
   isConnected,
   onPurposeChange,
   onPartnerNameChange,
   onIntentChange,
+  onVoiceChange,
   onStart,
 }: CallSetupFormProps) {
   const profile = CALL_PURPOSE_PROFILES[purpose];
   const greeting = intent.trim() ? buildGreeting(intent, purpose) : '';
+  const canFillSample = !partnerName.trim() || !intent.trim();
+  const startHint = !isConnected
+    ? 'サーバーに接続すると発信できます。'
+    : !intent.trim()
+    ? '最初に伝える用件を入力すると発信できます。'
+    : null;
+
+  /** 空の欄にだけ架空の例を入れる。本人が入力した内容は上書きしない。 */
+  const fillSample = () => {
+    if (!partnerName.trim()) onPartnerNameChange(profile.samplePartnerName);
+    if (!intent.trim()) onIntentChange(profile.sampleIntent);
+  };
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -84,6 +106,21 @@ export function CallSetupForm({
         </div>
       </fieldset>
 
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-xl border border-dashed border-line-strong py-2 pr-2 pl-4">
+        <p className="text-[14px] leading-snug text-ink-2">
+          架空の例で試せます<span className="max-sm:hidden">（入力済みの欄は変えません）</span>
+        </p>
+        <button
+          type="button"
+          onClick={fillSample}
+          disabled={!canFillSample}
+          className={buttonClass('secondary', 'md', 'shrink-0')}
+        >
+          <Wand2 className="size-4" aria-hidden />
+          例を入力
+        </button>
+      </div>
+
       <div className="space-y-2">
         <label htmlFor="partner-name" className="block text-[15px] font-bold">
           相手の名前 <span className="font-normal text-ink-2">（任意）</span>
@@ -120,6 +157,37 @@ export function CallSetupForm({
         />
       </div>
 
+      <fieldset className="space-y-2">
+        <legend className="mb-2 text-[15px] font-bold">読み上げの声</legend>
+        <div className="flex flex-wrap gap-2">
+          {SPEECH_VOICES.map((value) => {
+            const checked = value === voice;
+            return (
+              <label
+                key={value}
+                className={cx(
+                  'flex min-h-11 cursor-pointer items-center gap-2.5 rounded-lg border bg-surface px-4 py-2 transition-colors duration-150',
+                  checked ? 'border-voice ring-1 ring-voice' : 'border-line hover:border-line-strong',
+                )}
+              >
+                <input
+                  type="radio"
+                  name="voice"
+                  value={value}
+                  checked={checked}
+                  onChange={() => onVoiceChange(value)}
+                  className="size-4 accent-voice"
+                />
+                <span className="font-bold">{VOICE_LABELS[value]}</span>
+              </label>
+            );
+          })}
+        </div>
+        <p className="text-[13px] leading-relaxed text-ink-2 text-pretty">
+          Googleの合成音声（Cloud Text-to-Speech）で読み上げます。使えないときは、相手の端末の日本語の声で読みます。
+        </p>
+      </fieldset>
+
       {greeting && (
         <div className="space-y-2">
           <p className="text-[13px] font-bold text-ink-2">相手が応答すると、この文を読み上げます</p>
@@ -132,14 +200,23 @@ export function CallSetupForm({
         </div>
       )}
 
-      <button
-        type="submit"
-        disabled={!intent.trim() || !isConnected}
-        className={buttonClass('primary', 'lg', 'w-full sm:w-auto sm:min-w-56')}
-      >
-        <Phone className="size-5" aria-hidden />
-        {isConnected ? '発信する' : 'サーバーに接続しています…'}
-      </button>
+      {/* スマホでは用件の入力中も発信ボタンが見えるよう、フォームの下端に留める。フォームを過ぎると元の位置に戻る。 */}
+      <div className="space-y-2 max-lg:sticky max-lg:bottom-0 max-lg:-mx-4 max-lg:border-t max-lg:border-line max-lg:bg-canvas/95 max-lg:px-4 max-lg:pt-3 max-lg:pb-[max(0.75rem,env(safe-area-inset-bottom))] max-lg:backdrop-blur-sm">
+        <button
+          type="submit"
+          disabled={!intent.trim() || !isConnected}
+          aria-describedby={startHint ? 'start-hint' : undefined}
+          className={buttonClass('primary', 'lg', 'w-full sm:w-auto sm:min-w-64')}
+        >
+          <Phone className="size-5" aria-hidden />
+          {isConnected ? '発信する' : 'サーバーに接続しています…'}
+        </button>
+        {startHint && (
+          <p id="start-hint" className="text-[14px] text-ink-2">
+            {startHint}
+          </p>
+        )}
+      </div>
     </form>
   );
 }
