@@ -550,10 +550,12 @@ export default function HospitalApp() {
     } else if (data.type === 'patient_speaking_status') {
       setIsPatientSpeaking(data.isSpeaking);
     } else if (data.type === 'call_ending') {
-      stopCallMedia();
+      // 本人は最後の一言を送ってすぐ終えることがあるので、届いた文は読み終えてから止まる。録音と着信音はすぐ止める。
+      stopRingtone();
+      releaseMic();
       setCallState('ended');
     }
-  }, [addCaption, applySnapshot, beginCapture, queueSpeech, releaseMic, returnToLobby, stopCallMedia, stopRingtone]);
+  }, [addCaption, applySnapshot, beginCapture, queueSpeech, releaseMic, returnToLobby, stopRingtone]);
 
   const isConnected = useCallSocket(channel, {
     onMessage: handleServerMessage,

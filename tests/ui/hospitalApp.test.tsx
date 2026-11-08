@@ -843,6 +843,30 @@ describe('相手の画面の字幕と読み上げの報告', () => {
     expect(notice.textContent).toContain('Google Cloud（Speech-to-Text、Gemini）');
   });
 
+  // 本人は最後の一言を送ってすぐ通話を終えることがある。終了の知らせで読み上げを止めると、相手に届かない。
+  it('通話の終了の知らせが来ても、本人が送った文は最後まで読み上げる', () => {
+    answeredCall();
+    act(() => current().onend?.());
+    receive({ type: 'patient_speech', text: 'ありがとうございました。', origin: 'quick_phrase', seq: 2 });
+    receive({ type: 'patient_speech', text: '失礼します。', origin: 'quick_phrase', seq: 3 });
+
+    receive({ type: 'call_ending' });
+
+    expect(screen.getByText('通話が終了しました')).toBeTruthy();
+    expect(window.speechSynthesis.cancel).not.toHaveBeenCalled();
+    act(() => current().onend?.());
+    expect(spoken.map((utterance) => utterance.text)).toEqual(['あいさつの文', 'ありがとうございました。', '失礼します。']);
+  });
+
+  it('自分で通話を切ったときは、読み上げも止める', () => {
+    answeredCall();
+    receive({ type: 'patient_speech', text: 'まだ読んでいる文', origin: 'typed', seq: 2 });
+
+    fireEvent.click(screen.getByRole('button', { name: '通話を切る' }));
+
+    expect(window.speechSynthesis.cancel).toHaveBeenCalled();
+  });
+
   it('読み上げの開始と終了を、本人の発言の番号で知らせる', () => {
     answeredCall();
 
