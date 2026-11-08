@@ -43,6 +43,8 @@ import type { SpeechChoice } from '@/lib/composer';
 
 const HOSPITAL_IDLE_NOTICE_MS = 5000;
 
+const SEND_REJECTED_NOTICE = '直前の送信を受け付けられませんでした。その文は相手に届いていません。もう一度お試しください。';
+
 /**
  * 自動案内を相手の端末が読み終えるまでの見込み時間（1文字あたり）。
  * 案内の間は相手が話せないので、読み終えた頃に解除する。案内には読み上げの報告がない。
@@ -228,6 +230,9 @@ export default function PatientApp() {
       } else if (!channel.hasSeat()) {
         // 発信を断られた。入力した用件は残し、そのままかけ直せるようにする。
         setCallState('idle');
+      } else if (data.code === 'invalid_message' || data.code === 'not_allowed') {
+        // 通話中に送った文をサーバーが受け付けなかった（通話の終了と行き違った等）。送れたように見せない。
+        setSendError(SEND_REJECTED_NOTICE);
       }
       if (notice) setCallNotice(notice);
     } else if (data.type === 'call_closed') {

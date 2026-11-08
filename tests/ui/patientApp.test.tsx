@@ -1293,3 +1293,25 @@ describe('登録した文（カスタム返答）', () => {
     expect(socket().sentOfType('patient_confirmed_speech')).toEqual([]);
   });
 });
+
+describe('サーバーが送信を断ったとき', () => {
+  it('通話中に文を断られたら、届いていないことを本人に示す', () => {
+    renderConnectedCall();
+    typeMessage('届かない文');
+    fireEvent.click(sendTypedButton());
+
+    receive({ type: 'call_error', code: 'invalid_message' });
+
+    expect(screen.getByRole('alert').textContent).toContain('相手に届いていません');
+  });
+
+  it('通話の段階が変わって断られた場合も示す', () => {
+    renderConnectedCall();
+    typeMessage('終了と行き違った文');
+    fireEvent.click(sendTypedButton());
+
+    receive({ type: 'call_error', code: 'not_allowed' });
+
+    expect(screen.getByRole('alert').textContent).toContain('相手に届いていません');
+  });
+});
