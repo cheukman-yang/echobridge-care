@@ -9,6 +9,21 @@
 - 電話回線（PSTN）にはつながらない。Web通話で完結する
 - 病院の予約はデモのシナリオの1つ。日常の連絡にも使える
 
+## 公開版で試す
+
+**https://echobridge-765277972072.asia-northeast1.run.app**
+
+ブラウザを2つ使う（PCの2つのウィンドウ、またはPCとスマートフォン）。インストールとログインは不要。**架空の内容だけで試し、実在の個人情報は話さない。**
+
+1. 本人の画面（上のURL）で「例を入力」→「発信する」
+2. 表示された招待リンクを、別のウィンドウかスマートフォンのブラウザで開く（相手の画面）→「応答する」。あいさつが読み上げられる
+3. 相手の画面で「押して話す」を押し、たとえば「明日の午後2時半はいかがですか」と話して、もう一度押す（初回はマイクの許可が必要）
+4. 本人の画面に相手の発言とAIの返答候補が出る。候補・即答フレーズ・入力から選ぶと、相手の画面で読み上げられる
+5. 本人の画面で「通話を終了」→ 会話から読み取った予定の下書きを確かめ、「Google カレンダーに追加」
+
+- 相手の画面のマイクは、Safari・Chromeなどのブラウザで使う。LINEなどのアプリ内のブラウザでは使えないことがある
+- 音声はスピーカーから出るので、1台のPCで試すときは音量に注意する
+
 ## 使い方の流れ
 
 | | 本人（`/`） | 相手（`/join`） |
@@ -39,34 +54,7 @@
 
 ## 構成
 
-```mermaid
-flowchart LR
-  subgraph user["本人のブラウザ（/）"]
-    U["会話支援の画面"]
-  end
-  subgraph partner["相手のブラウザ（/join）"]
-    P["参加・押して話す画面"]
-    T["audio要素で再生（使えなければ端末の日本語の声）"]
-  end
-  subgraph gcp["Google Cloud"]
-    subgraph run["Cloud Run（1サービス・最大1インスタンス）"]
-      W["Next.js の画面 + 通話サーバー（/ws/call）"]
-    end
-    S["Speech-to-Text v1"]
-    G["Vertex AI Gemini"]
-    TT["Text-to-Speech（Chirp 3: HD）"]
-  end
-  C["Google カレンダーの予定作成画面"]
-  U <-->|"WebSocket"| W
-  P <-->|"WebSocket（音声 16kHz PCM）"| W
-  W -->|"音声"| S
-  S -->|"文字起こし"| W
-  W <-->|"返答候補・整形・予定の読み取り"| G
-  W <-->|"本人が確定した文 → 音声（MP3）"| TT
-  W -->|"本人が確定した文と音声"| P
-  P --> T
-  U -->|"本人が確認した予定"| C
-```
+![EchoBridge のアーキテクチャ。本人と相手のブラウザがCloud Runの通話サーバーにWebSocketでつながり、Speech-to-Text、Vertex AIのGemini、Text-to-Speechを使う](docs/architecture.svg)
 
 - 画面: Next.js 16（App Router）、React 19、Tailwind CSS 4。`src/app/page.tsx`（本人）、`src/app/join/page.tsx`（相手）
 - サーバー: Node.js の `http` と `ws`。`server/index.ts` が起動し、通話の処理は `server/callServer.ts` と `server/callRoom.ts`
@@ -150,6 +138,7 @@ npm run test:live
 | 設定 | 値 | 理由 |
 |---|---|---|
 | `--max-instances` | `1` | 通話の状態をインスタンス間で共有していないため |
+| `--min`（サービス単位） | `1` | 待機中も1台を残し、最初の表示を待たせない（0のときは初回の表示に約7秒かかった） |
 | `--timeout` | `3600` | 既定の5分でWebSocketが切れるため。切れても自動で再接続する |
 | `--concurrency` | `200` | WebSocket 1本が同時リクエスト1件に数えられるため |
 
@@ -182,3 +171,7 @@ NODE_ENV=production npm start
 - 対応言語は日本語だけ
 
 今後の候補と判断材料は [docs/FEATURES.md](docs/FEATURES.md) の「今後の拡張」。
+
+## ライセンス
+
+[MIT License](LICENSE)。使っているライブラリ・フォント・Google Cloudのサービスは、それぞれのライセンスと利用規約に従う。

@@ -48,3 +48,17 @@ next-env.d.ts
 credentials.json
 service-account*.json
 *.log
+
+# --- 提出用リポジトリ（運営）と同じ秘密情報の除外 ---
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+*.p12
+credentials*.json
+google-services.json
+GoogleService-Info.plist
+__pycache__/
+*.pyc
+.venv/
+venv/
+Thumbs.db
