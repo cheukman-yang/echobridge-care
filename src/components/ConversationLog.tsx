@@ -79,6 +79,17 @@ export function ConversationLog({
     if (stickRef.current) endRef.current?.scrollIntoView?.({ block: 'end' });
   }, [messages.length, liveText, isPartnerSpeaking]);
 
+  // 返答の方法の切り替えやキーボードで記録の高さが変わっても、最新の発言が見える位置に留める。
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (stickRef.current) scroller.scrollTop = scroller.scrollHeight;
+    });
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, []);
+
   const onScroll = () => {
     const el = scrollerRef.current;
     if (!el) return;

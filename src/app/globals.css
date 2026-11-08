@@ -1,6 +1,18 @@
 @import "tailwindcss";
 
 /*
+ * 高さが低い画面。スマートフォンでキーボードが開いたとき（Androidは interactive-widget で画面が縮む）や横向きで効く。
+ * 見出しや補足を省き、入力欄と送るボタンに高さを回す。
+ */
+@custom-variant short (@media (max-height: 560px));
+
+/* さらに低い画面（縦向きのスマートフォンでキーボードが開いたときなど）。入力欄と送るボタンを最優先にする。 */
+@custom-variant tiny (@media (max-height: 380px));
+
+/* 横向きのスマートフォン。会話の記録と返答欄を左右に並べる。 */
+@custom-variant landscape-short (@media (orientation: landscape) and (max-height: 560px) and (min-width: 640px));
+
+/*
  * EchoBridge のデザイントークン。
  * 色は「面（白とごく薄いグレー）」「文字」「本人の声（ティール）」「注意（琥珀）」「切断・失敗（赤）」に絞る。
  * ティールは本人が送った文と主な操作だけに使い、装飾には使わない。

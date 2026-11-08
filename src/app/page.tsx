@@ -12,7 +12,7 @@ import { CustomPhrasesSection } from '@/components/CustomPhrases';
 import type { TranscriptLine } from '@/components/CallSummary';
 import { ConversationLog, ORIGIN_LABELS } from '@/components/ConversationLog';
 import type { LogMessage } from '@/components/ConversationLog';
-import { ReplyPanel } from '@/components/ReplyPanel';
+import { CallWorkspace } from '@/components/CallWorkspace';
 import { buttonClass } from '@/components/ui';
 import { useCallChannel, useCallSocket } from '@/hooks/useCallChannel';
 import type { AiMeta, AiStatus } from '@/lib/aiMeta';
@@ -428,8 +428,9 @@ export default function PatientApp() {
   const handleSendSuggestion = (text: string) => {
     if (isHospitalSpeaking) return;
     const origin = suggestionsAi?.source === 'gemini' ? 'suggestion' : 'fallback_suggestion';
-    if (sendConfirmedSpeech(text, origin)) {
-      // 候補で返答したら、作成中のAI案は不要なので確認画面を開かない。
+    // 候補で返答したら、作成中のAI案は不要なので、届いても確認画面を開かない。
+    // 確認中の案は本人が直しているかもしれないので閉じない（入力欄の文も残る）。
+    if (sendConfirmedSpeech(text, origin) && composer.phase === 'polishing') {
       dispatchComposer({ type: 'close' });
     }
   };
@@ -587,8 +588,8 @@ export default function PatientApp() {
         )}
 
         {isInCall && (
-          <div className="mx-auto flex h-full max-w-[1440px] flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(26rem,34rem)]">
-            <section aria-label="会話" className="min-h-0 flex-1 lg:border-r lg:border-line">
+          <CallWorkspace
+            log={
               <ConversationLog
                 messages={messages}
                 delivery={delivery}
@@ -598,35 +599,28 @@ export default function PatientApp() {
                 isPartnerSpeaking={isHospitalSpeaking}
                 liveText={liveHospitalText}
               />
-            </section>
-            <section
-              aria-label="返答"
-              className="flex max-h-[60%] min-h-0 shrink-0 flex-col border-t border-line bg-surface lg:max-h-none lg:border-t-0"
-            >
-              <ReplyPanel
-                partnerLabel={partnerLabel}
-                latestPartnerText={latestPartnerText}
-                isPartnerSpeaking={isHospitalSpeaking}
-                isGenerating={isGenerating}
-                suggestions={suggestions}
-                suggestionsAi={suggestionsAi}
-                composer={composer}
-                input={patientInput}
-                sendError={sendError}
-                onInputChange={setPatientInput}
-                onInputKeyDown={handleInputKeyDown}
-                onRequestPolish={handleRequestPolish}
-                onCancelPolish={() => dispatchComposer({ type: 'close' })}
-                onSendTyped={handleSendTyped}
-                onSendSuggestion={handleSendSuggestion}
-                onSendQuickPhrase={handleSendQuickPhrase}
-                onSendCustomPhrase={handleSendCustomPhrase}
-                onEditDraft={(draft) => dispatchComposer({ type: 'edit_draft', draft })}
-                onReviewSend={handleReviewSend}
-                onCloseReview={() => dispatchComposer({ type: 'close' })}
-              />
-            </section>
-          </div>
+            }
+            partnerLabel={partnerLabel}
+            latestPartnerText={latestPartnerText}
+            isPartnerSpeaking={isHospitalSpeaking}
+            isGenerating={isGenerating}
+            suggestions={suggestions}
+            suggestionsAi={suggestionsAi}
+            composer={composer}
+            input={patientInput}
+            sendError={sendError}
+            onInputChange={setPatientInput}
+            onInputKeyDown={handleInputKeyDown}
+            onRequestPolish={handleRequestPolish}
+            onCancelPolish={() => dispatchComposer({ type: 'close' })}
+            onSendTyped={handleSendTyped}
+            onSendSuggestion={handleSendSuggestion}
+            onSendQuickPhrase={handleSendQuickPhrase}
+            onSendCustomPhrase={handleSendCustomPhrase}
+            onEditDraft={(draft) => dispatchComposer({ type: 'edit_draft', draft })}
+            onReviewSend={handleReviewSend}
+            onCloseReview={() => dispatchComposer({ type: 'close' })}
+          />
         )}
 
         {callState === 'analyzing' && (
