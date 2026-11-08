@@ -239,13 +239,15 @@ describe('extractAppointment', () => {
     ],
   };
 
-  it('Geminiの読み取りを下書きにする', async () => {
+  it('Geminiの読み取りを、会話の言葉と照合してから下書きにする', async () => {
     const assistant = createAiAssistant(
       createFakeRunner(
         createFakeModels(() =>
           jsonReply({
             title: '内科 初診予約',
+            dateText: '明日',
             date: '2026-11-08',
+            timeText: '午後2時半',
             startTime: '14:30',
             endTime: null,
             details: '持ち物: マイナンバーカード',
@@ -264,7 +266,77 @@ describe('extractAppointment', () => {
       startTime: '14:30',
       endTime: null,
       details: '持ち物: マイナンバーカード',
+      spoken: { date: '明日', time: '午後2時半' },
+      issues: [],
     });
+  });
+
+  it('根拠の言葉を値より先に書かせ、住所も求める', async () => {
+    const models = createFakeModels(() =>
+      jsonReply({ title: null, date: null, startTime: null, endTime: null, details: null }),
+    );
+
+    await createAiAssistant(createFakeRunner(models), () => NOW).extractAppointment(input);
+
+    const config = models.generateContent.mock.calls[0][0].config as {
+      responseSchema: { propertyOrdering: string[] };
+    };
+    const order = config.responseSchema.propertyOrdering;
+    expect(order.indexOf('dateText')).toBeLessThan(order.indexOf('date'));
+    expect(order.indexOf('timeText')).toBeLessThan(order.indexOf('startTime'));
+    expect(order).toContain('address');
+  });
+
+  it('会話と矛盾する日時は採用せず、理由を返す', async () => {
+    const assistant = createAiAssistant(
+      createFakeRunner(
+        createFakeModels(() =>
+          jsonReply({
+            title: null,
+            dateText: '明日',
+            // 「明日」は 2026-11-08。AIが日付を取り違えた想定。
+            date: '2026-11-09',
+            timeText: '午後2時半',
+            startTime: '02:30',
+            endTime: null,
+            details: null,
+          }),
+        ),
+      ),
+      () => NOW,
+    );
+
+    const { appointment } = await assistant.extractAppointment(input);
+
+    expect(appointment.date).toBeNull();
+    expect(appointment.startTime).toBeNull();
+    expect(appointment.issues?.map((item) => item.code)).toEqual(['date_mismatch', 'time_mismatch']);
+  });
+
+  it('会話にない日時・場所・住所は、AIが返しても使わない', async () => {
+    const assistant = createAiAssistant(
+      createFakeRunner(
+        createFakeModels(() =>
+          jsonReply({
+            title: null,
+            dateText: '来週の月曜日',
+            date: '2026-11-09',
+            timeText: '10時',
+            startTime: '10:00',
+            endTime: null,
+            location: 'さくら病院',
+            address: '本町1丁目',
+            details: null,
+          }),
+        ),
+      ),
+      () => NOW,
+    );
+
+    const { appointment } = await assistant.extractAppointment({ ...input, partnerName: 'ひまわり医院' });
+
+    expect(appointment).toMatchObject({ date: null, startTime: null, location: 'ひまわり医院', address: '' });
+    expect(appointment.aiFields).toEqual([]);
   });
 
   it('日本時間の現在日時をGeminiに渡す', async () => {
@@ -310,27 +382,33 @@ describe('extractAppointment', () => {
       startTime: null,
       endTime: null,
       location: 'ひまわり医院',
+      address: '',
       details: '',
       aiFields: [],
     });
   });
 
-  it('場所は会話で決まった場所を優先し、なければ医療機関の名前にする', async () => {
-    const reply = (location: string | null) =>
+  it('場所と住所は会話で話されたものを使い、場所がなければ医療機関の名前にする', async () => {
+    const reply = (location: string | null, address: string | null) =>
       createAiAssistant(
         createFakeRunner(
           createFakeModels(() =>
-            jsonReply({ title: null, date: null, startTime: null, endTime: null, location, details: null }),
+            jsonReply({ title: null, date: null, startTime: null, endTime: null, location, address, details: null }),
           ),
         ),
         () => NOW,
       );
+    const withPlace = {
+      ...input,
+      partnerName: 'ひまわり医院',
+      history: [...input.history, { sender: '病院受付' as const, text: '本院ではなく駅前分院です。住所は本町2丁目3番4号です。' }],
+    };
 
-    const spoken = await reply('2階の内科受付').extractAppointment({ ...input, partnerName: 'ひまわり医院' });
-    const unspoken = await reply(null).extractAppointment({ ...input, partnerName: 'ひまわり医院' });
+    const spoken = await reply('駅前分院', '本町2丁目3番4号').extractAppointment(withPlace);
+    const unspoken = await reply(null, null).extractAppointment(withPlace);
 
-    expect(spoken.appointment.location).toBe('2階の内科受付');
-    expect(unspoken.appointment.location).toBe('ひまわり医院');
+    expect(spoken.appointment).toMatchObject({ location: '駅前分院', address: '本町2丁目3番4号' });
+    expect(unspoken.appointment).toMatchObject({ location: 'ひまわり医院', address: '' });
   });
 
   it('日常の連絡では、相手の名前を場所にしない', async () => {

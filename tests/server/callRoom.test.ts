@@ -11,6 +11,7 @@ const APPOINTMENT: ExtractAppointmentResult = {
     startTime: null,
     endTime: null,
     location: 'ひまわり医院 (受付)',
+    address: '',
     details: '',
   },
   ai: { source: 'fallback', reason: 'not_configured' },

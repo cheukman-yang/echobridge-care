@@ -59,7 +59,7 @@ const ai: AiAssistant = {
   suggestReplies: async () => ({ suggestions: [], ai: FALLBACK }),
   polishText: async ({ text }) => ({ original: text, polished: null, ai: FALLBACK }),
   extractAppointment: async () => ({
-    appointment: { title: '', date: null, startTime: null, endTime: null, location: '', details: '' },
+    appointment: { title: '', date: null, startTime: null, endTime: null, location: '', address: '', details: '' },
     ai: FALLBACK,
   }),
 };

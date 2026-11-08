@@ -51,6 +51,20 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/*
+ * 日付と時刻の欄。iOS Safari では、空のときに高さが潰れる、値が中央に寄る、
+ * 固有の最小幅で親の枠からはみ出す、が起きるので補う。
+ */
+input[type="date"],
+input[type="time"] {
+  min-width: 0;
+}
+
+input::-webkit-date-and-time-value {
+  min-height: 1.5em;
+  text-align: left;
+}
+
 /* キーボード操作のときだけ、はっきりした輪郭を出す。 */
 :focus-visible {
   outline: 3px solid var(--color-voice);

@@ -104,6 +104,27 @@ describe('Gemini 実API', () => {
       expect(result.appointment.details).toContain('マイナンバーカード');
     });
 
+    it('日付と曜日が合わない会話では日付を確定せず、話された住所は表記のまま読み取る', async () => {
+      // NOW は 2026-11-09(月)。11月12日は木曜日。
+      const result = await timed('appointment', () =>
+        assistant.extractAppointment({
+          intent: '再診の予約',
+          partnerName: 'ひまわり医院',
+          history: [
+            { sender: '患者', text: '再診の予約をしたいです。' },
+            { sender: '病院受付', text: '11月12日の火曜日、午後3時はいかがですか。' },
+            { sender: '患者', text: 'はい、お願いします。' },
+            { sender: '病院受付', text: '住所は本町2丁目3番4号です。午後3時にお待ちしております。' },
+          ],
+        }),
+      );
+
+      console.info(result.appointment);
+      expect(result.ai.source).toBe('gemini');
+      expect(result.appointment.date).toBeNull();
+      expect(result.appointment.address).toBe('本町2丁目3番4号');
+    });
+
     it('日時が決まっていなければ空のまま返す', async () => {
       const result = await timed('appointment', () =>
         assistant.extractAppointment({

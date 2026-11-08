@@ -38,7 +38,7 @@ const PARTNER_LINES: Record<CallPurpose, string[]> = {
   medical: [
     'はい、ひまわり医院受付です。初診のご予約ですね。ご希望の日時はありますか。',
     '明日の午後2時半でしたらご案内できます。保険の確認のため、マイナンバーカードをお持ちください。',
-    'それでは明日の午後2時半にお待ちしております。',
+    'それでは明日の午後2時半にお待ちしております。住所は本町2丁目3番4号、ひまわりビルの2階です。',
   ],
   general: [
     'もしもし。土曜日の待ち合わせの件だよね。何時にする？',
@@ -210,8 +210,8 @@ function nextWeekday(date: string, weekday: number): string {
   return addDays(date, (weekday - current + 7) % 7 || 7);
 }
 
-/** 会話に出た最後の時刻を HH:mm にする。 */
-function lastTime(text: string): string | null {
+/** 会話に出た最後の時刻（HH:mm）と、その言い方。 */
+function lastTime(text: string): { text: string; time: string } | null {
   const matches = [...text.matchAll(/(午前|午後)?\s*(\d{1,2})時(半|(\d{1,2})分)?/g)];
   const last = matches.at(-1);
   if (!last) return null;
@@ -219,26 +219,39 @@ function lastTime(text: string): string | null {
   if (last[1] === '午後' && hour < 12) hour += 12;
   const minute = last[3] === '半' ? 30 : Number(last[4] ?? 0);
   if (hour > 23 || minute > 59) return null;
-  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  return { text: last[0].trim(), time: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}` };
 }
 
-/** 台本の会話から予定を作る。AIではないので、決まった言い回しだけを読む。 */
+/**
+ * 台本の会話から予定を作る。AIではないので、決まった言い回しだけを読む。
+ * 本物のGeminiと同じく日時の根拠の言葉（dateText / timeText）も返し、サーバーが会話と照合する。
+ */
 function mockAppointment(input: Record<string, unknown>) {
   const turns = Array.isArray(input['会話']) ? (input['会話'] as { text?: unknown }[]) : [];
   const text = turns.map((turn) => String(turn.text ?? '')).join('\n');
   const today = String(input['現在日時'] ?? '').slice(0, 10);
   const hasToday = /^\d{4}-\d{2}-\d{2}$/.test(today);
   let date: string | null = null;
-  if (hasToday && /明後日/.test(text)) date = addDays(today, 2);
-  else if (hasToday && /明日/.test(text)) date = addDays(today, 1);
-  else if (hasToday && /土曜/.test(text)) date = nextWeekday(today, 6);
+  let dateText: string | null = null;
+  const saturday = /土曜日?/.exec(text)?.[0];
+  if (hasToday && /明後日/.test(text)) [date, dateText] = [addDays(today, 2), '明後日'];
+  else if (hasToday && /明日/.test(text)) [date, dateText] = [addDays(today, 1), '明日'];
+  else if (hasToday && saturday) [date, dateText] = [nextWeekday(today, 6), saturday];
+  const time = lastTime(text);
+  const details = [
+    /マイナンバーカード/.test(text) && 'マイナンバーカードを持参',
+    /ひまわりビルの2階/.test(text) && 'ひまわりビルの2階',
+  ].filter(Boolean);
   return {
     title: null,
+    dateText,
     date,
-    startTime: lastTime(text),
+    timeText: time?.text ?? null,
+    startTime: time?.time ?? null,
     endTime: null,
-    location: /駅前の改札/.test(text) ? '駅前の改札' : null,
-    details: /マイナンバーカード/.test(text) ? 'マイナンバーカードを持参' : null,
+    location: /駅前の改札/.test(text) ? '駅前の改札' : /ひまわり医院/.test(text) ? 'ひまわり医院' : null,
+    address: /住所は([^、。]+)/.exec(text)?.[1] ?? null,
+    details: details.length > 0 ? details.join('。') : null,
   };
 }
 

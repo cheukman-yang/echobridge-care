@@ -71,11 +71,16 @@ const APPOINTMENT_INSTRUCTION = `あなたは、通話の記録から予定の�
 予定が話されていない通話もあります。その場合は、すべての項目を null にしてください。
 
 必ず守ること:
-- 会話で双方が合意した内容だけを書く。候補として出ただけの日時は書かない。
-- date は「現在日時」を基準に YYYY-MM-DD へ変換する。「明日」「来週火曜」も変換する。特定できなければ null。
-- startTime と endTime は24時間表記の HH:mm。「午後2時半」は "14:30"。特定できなければ null。終了時刻が話されていなければ endTime は null。
+- 会話で双方が合意した内容だけを書く。候補として出ただけの日時や場所は書かない。
+- dateText には、決まった日付を表す言葉を、会話の文から一字一句そのまま抜き出す（例: 「明日」「11月12日の火曜日」）。言い換え、要約、補足をしない。同じ文で曜日も話されていれば含める。日付が決まっていなければ null。
+- date は dateText を「現在日時」を基準に YYYY-MM-DD へ変換したもの。「明日」「来週火曜」も変換する。特定できなければ null。
+- timeText には、決まった時刻を表す言葉を、会話の文から一字一句そのまま抜き出す（例: 「午後2時半」「10時から11時まで」）。時刻が決まっていなければ null。
+- startTime と endTime は timeText を24時間表記の HH:mm にしたもの。「午後2時半」は "14:30"。「お昼ごろ」「夕方」のように時刻が決まっていなければ null。終了時刻が話されていなければ endTime は null。
+- 会話の中で日付と曜日が合わないなど、どれに決まったか分からないときは、推測で選ばず date や startTime を null にする。
 - title は「内科 初診予約」「駅前で待ち合わせ」のような短い名前にする。分からなければ null。
-- location は会話で決まった場所を書く。話されていなければ null。
+- location には、会話で決まった施設・店・駅・待ち合わせ場所の名前を、会話の表記のまま書く（例: 「ひまわり医院」「駅前の改札」）。話されていなければ null。
+- address には、会話で話された住所を、会話の表記のまま書く（例: 「本町2丁目3番4号」）。話されていなければ null。施設名から住所を調べたり補ったりしない。
+- 「2階の受付」「東口」のような、施設の中の場所や入口は details に書く。
 - details には持ち物や注意事項を会話のとおりに書く。「マイナンバーカードまたは健康保険資格確認書」のような選択肢はそのまま残す。なければ null。
 - ${DATA_RULE}`;
 
@@ -125,23 +130,42 @@ const POLISH_RESPONSE_SCHEMA: Schema = {
 
 const AppointmentSchema = z.object({
   title: z.string().nullable(),
+  dateText: z.string().nullable().default(null),
   date: z.string().nullable(),
+  timeText: z.string().nullable().default(null),
   startTime: z.string().nullable(),
   endTime: z.string().nullable(),
   location: z.string().nullable().default(null),
+  address: z.string().nullable().default(null),
   details: z.string().nullable(),
 });
 
+const APPOINTMENT_FIELDS = [
+  'title',
+  'dateText',
+  'date',
+  'timeText',
+  'startTime',
+  'endTime',
+  'location',
+  'address',
+  'details',
+];
+
+/** 根拠の言葉を値より先に書かせる。言葉を抜き出してから変換するほうが、取り違えが減る。 */
 const APPOINTMENT_RESPONSE_SCHEMA: Schema = {
   type: Type.OBJECT,
-  required: ['title', 'date', 'startTime', 'endTime', 'location', 'details'],
-  propertyOrdering: ['title', 'date', 'startTime', 'endTime', 'location', 'details'],
+  required: APPOINTMENT_FIELDS,
+  propertyOrdering: APPOINTMENT_FIELDS,
   properties: {
     title: { type: Type.STRING, nullable: true },
+    dateText: { type: Type.STRING, nullable: true, description: '日付の根拠。会話の文からそのまま抜き出す' },
     date: { type: Type.STRING, nullable: true, description: 'YYYY-MM-DD' },
+    timeText: { type: Type.STRING, nullable: true, description: '時刻の根拠。会話の文からそのまま抜き出す' },
     startTime: { type: Type.STRING, nullable: true, description: 'HH:mm' },
     endTime: { type: Type.STRING, nullable: true, description: 'HH:mm' },
-    location: { type: Type.STRING, nullable: true },
+    location: { type: Type.STRING, nullable: true, description: '施設・店・駅・待ち合わせ場所の名前' },
+    address: { type: Type.STRING, nullable: true, description: '会話で話された住所' },
     details: { type: Type.STRING, nullable: true },
   },
 };
@@ -333,6 +357,7 @@ export function createAiAssistant(
             date: null,
             startTime: null,
             endTime: null,
+            address: '',
             details: '',
             aiFields: [],
           },
@@ -340,8 +365,13 @@ export function createAiAssistant(
         };
       }
 
+      // 日時と場所は、会話（と本人が入れた相手の名前）にある言葉だけを採用する。
+      const sources = {
+        conversation: history.map(({ text }) => text),
+        userInputs: partnerName ? [partnerName] : [],
+      };
       return {
-        appointment: sanitizeAppointment(result.data, defaults, tokyoToday(currentTime)),
+        appointment: sanitizeAppointment(result.data, defaults, tokyoToday(currentTime), sources),
         ai: result.ai,
       };
     },

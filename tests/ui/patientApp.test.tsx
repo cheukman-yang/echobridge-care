@@ -474,8 +474,15 @@ describe('通話後の予定の確認', () => {
     startTime: null,
     endTime: null,
     location: 'ひまわり医院 (受付)',
+    address: '',
     details: '',
   };
+
+  // 過ぎた日時の判定があるので、今日を固定する。2026-11-09(月) 10:00 JST。タイマーは本物のまま。
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-09T01:00:00Z'));
+  });
 
   function endCall(appointment: AppointmentDraft, ai: AiMeta) {
     renderConnectedCall();
@@ -542,6 +549,111 @@ describe('通話後の予定の確認', () => {
 
     fireEvent.click(calendarButton());
     expect(new URL(String(open.mock.calls[0][0])).searchParams.get('location')).toBe('北口の改札');
+  });
+
+  it('会話の日付と曜日が合わずAIが日付を空けたら、理由を見せ、本人が日付を入れるまで追加できない', () => {
+    const open = vi.fn();
+    vi.stubGlobal('open', open);
+    endCall(
+      {
+        ...unknown,
+        startTime: '14:30',
+        aiFields: ['startTime'],
+        spoken: { date: '11月12日（火）', time: '午後2時半' },
+        issues: [{ field: 'date', code: 'weekday_mismatch', said: '11月12日（火）', value: '2026-11-12' }],
+      },
+      GEMINI,
+    );
+
+    // 日付の話はあったので、予定なしの画面にしない。
+    expect(screen.queryByText('通話の中で、決まった予定は見つかりませんでした。')).toBeNull();
+    expect(screen.getByText(/曜日が合いません/).textContent).toContain('11月12日（木）');
+    expect(screen.getByText('会話での言い方：「11月12日（火）」')).toBeTruthy();
+    expect(calendarButton()).toHaveProperty('disabled', true);
+    expect(screen.getByText('日付を入れてください。')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText(/日付/), { target: { value: '2026-11-17' } });
+
+    // 本人が選んだ日付は止めないが、会話と違うことは知らせ続ける。
+    expect(screen.queryByText(/曜日が合いません/)).toBeNull();
+    expect(screen.getByText(/会話の「11月12日（火）」と合いません/).textContent).toContain('11月17日（火）');
+    expect(calendarButton()).toHaveProperty('disabled', false);
+    fireEvent.click(calendarButton());
+    expect(new URL(String(open.mock.calls[0][0])).searchParams.get('dates')).toBe(
+      '20261117T143000/20261117T153000',
+    );
+  });
+
+  it('終了時刻が開始より前なら追加できず、カレンダーへ別の時刻を勝手に入れない', () => {
+    const open = vi.fn();
+    vi.stubGlobal('open', open);
+    endCall({ ...unknown, date: '2026-11-12', startTime: '14:30' }, GEMINI);
+
+    fireEvent.change(screen.getByLabelText(/終了/), { target: { value: '14:00' } });
+
+    expect(calendarButton()).toHaveProperty('disabled', true);
+    expect(screen.getAllByText('終了時刻を開始より後にするか、空欄にしてください。').length).toBeGreaterThan(0);
+    expect(screen.getByLabelText(/終了/).getAttribute('aria-invalid')).toBe('true');
+    fireEvent.click(calendarButton());
+    expect(open).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText(/終了/), { target: { value: '' } });
+    expect(calendarButton()).toHaveProperty('disabled', false);
+  });
+
+  it('過去の日付と、今日の過ぎた時刻は追加できない', () => {
+    endCall({ ...unknown, date: '2026-11-12', startTime: '14:30' }, GEMINI);
+
+    fireEvent.change(screen.getByLabelText(/日付/), { target: { value: '2026-11-08' } });
+    expect(calendarButton()).toHaveProperty('disabled', true);
+    expect(screen.getAllByText('11月8日（日）は今日より前の日付です。').length).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getByLabelText(/日付/), { target: { value: '2026-11-09' } });
+    fireEvent.change(screen.getByLabelText(/開始/), { target: { value: '09:00' } });
+    expect(calendarButton()).toHaveProperty('disabled', true);
+
+    fireEvent.change(screen.getByLabelText(/開始/), { target: { value: '11:00' } });
+    expect(calendarButton()).toHaveProperty('disabled', false);
+  });
+
+  it('選んだ日付に曜日を添え、会話での言い方と見比べられる', () => {
+    endCall(
+      { ...unknown, date: '2026-11-10', startTime: '14:30', spoken: { date: '明日', time: '午後2時半' } },
+      GEMINI,
+    );
+
+    expect(screen.getByText('11月10日（火）')).toBeTruthy();
+    expect(screen.getByText('会話での言い方：「明日」')).toBeTruthy();
+    expect(screen.getByText('会話での言い方：「午後2時半」')).toBeTruthy();
+  });
+
+  it('会話で話された住所は、地図の検索とカレンダーの場所に施設名と並べて使う', () => {
+    const open = vi.fn();
+    vi.stubGlobal('open', open);
+    endCall(
+      {
+        ...unknown,
+        date: '2026-11-12',
+        startTime: '14:30',
+        location: 'ひまわり医院',
+        address: '本町2丁目3番4号',
+        aiFields: ['date', 'startTime', 'location', 'address'],
+      },
+      GEMINI,
+    );
+
+    const mapsLink = () => screen.getByRole('link', { name: /Googleマップで/ }) as HTMLAnchorElement;
+    expect(new URL(mapsLink().href).searchParams.get('query')).toBe('ひまわり医院 本町2丁目3番4号');
+    expect(screen.getAllByText('AIの読み取り')).toHaveLength(4);
+
+    fireEvent.change(screen.getByLabelText(/住所/), { target: { value: '本町2丁目3番5号' } });
+    expect(new URL(mapsLink().href).searchParams.get('query')).toBe('ひまわり医院 本町2丁目3番5号');
+    expect(screen.getAllByText('AIの読み取り')).toHaveLength(3);
+
+    fireEvent.click(calendarButton());
+    expect(new URL(String(open.mock.calls[0][0])).searchParams.get('location')).toBe(
+      'ひまわり医院 本町2丁目3番5号',
+    );
   });
 
   it('場所が空なら地図のリンクを出さない', () => {
@@ -918,6 +1030,7 @@ describe('再接続', () => {
         startTime: '14:30',
         endTime: null,
         location: 'ひまわり医院 (受付)',
+        address: '',
         details: '',
       },
       ai: GEMINI,
@@ -944,6 +1057,7 @@ describe('再接続', () => {
             startTime: '14:30',
             endTime: null,
             location: 'ひまわり医院 (受付)',
+            address: '',
             details: '',
           },
           ai: GEMINI,
@@ -1070,6 +1184,7 @@ describe('予定のない通話の終了画面', () => {
     startTime: null,
     endTime: null,
     location: '',
+    address: '',
     details: '',
   };
 
@@ -1086,6 +1201,30 @@ describe('予定のない通話の終了画面', () => {
       'disabled',
       true,
     );
+  });
+
+  it('予定がなくても会話に場所が出ていれば、地図で確かめられ、手で追加するとその場所を使う', () => {
+    renderConnectedCall();
+    receive({
+      type: 'end_call',
+      appointment: {
+        ...noSchedule,
+        location: '駅前の美容室',
+        address: '本町1丁目',
+        aiFields: ['location', 'address'],
+      },
+      ai: GEMINI,
+    });
+
+    expect(screen.getByText('通話の中で、決まった予定は見つかりませんでした。')).toBeTruthy();
+    const link = screen.getByRole('link', { name: 'Googleマップで確かめる' }) as HTMLAnchorElement;
+    expect(new URL(link.href).searchParams.get('query')).toBe('駅前の美容室 本町1丁目');
+
+    fireEvent.click(screen.getByRole('button', { name: '予定を手で追加' }));
+
+    expect(screen.getByLabelText(/場所/)).toHaveProperty('value', '駅前の美容室');
+    expect(screen.getByLabelText(/住所/)).toHaveProperty('value', '本町1丁目');
+    expect(screen.getAllByText('AIの読み取り')).toHaveLength(2);
   });
 });
 
@@ -1148,6 +1287,7 @@ describe('レビュー指摘: 終了画面の予定の状態', () => {
     startTime: null,
     endTime: null,
     location: 'ひまわり医院',
+    address: '',
     details: '',
   };
 

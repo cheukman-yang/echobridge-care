@@ -112,7 +112,42 @@ export const PLAYBACK_STATUSES = ['started', 'ended', 'failed'] as const;
 
 export type PlaybackStatus = (typeof PLAYBACK_STATUSES)[number];
 
-export type AppointmentField = 'title' | 'date' | 'startTime' | 'endTime' | 'location' | 'details';
+export type AppointmentField =
+  | 'title'
+  | 'date'
+  | 'startTime'
+  | 'endTime'
+  | 'location'
+  | 'address'
+  | 'details';
+
+/**
+ * AIが読み取った日時を採用しなかった理由。採用しなかった項目は空欄にし、理由を本人に見せる。
+ * - weekday_mismatch: 会話の日付と曜日が合わない
+ * - date_mismatch: 読み取った日付が、会話の言葉（「明日」「12日」など）と合わない
+ * - past_date: 今日より前の日付
+ * - not_in_conversation: 根拠になる言葉が会話の中に見つからない
+ * - unclear_time: 会話の言葉（「お昼ごろ」など）から時刻を決められない
+ * - time_mismatch: 読み取った時刻が、会話の言葉（「午後2時半」など）と合わない
+ * - end_before_start: 終了時刻が開始時刻より前
+ */
+export type AppointmentIssueCode =
+  | 'weekday_mismatch'
+  | 'date_mismatch'
+  | 'past_date'
+  | 'not_in_conversation'
+  | 'unclear_time'
+  | 'time_mismatch'
+  | 'end_before_start';
+
+export interface AppointmentIssue {
+  field: 'date' | 'startTime' | 'endTime';
+  code: AppointmentIssueCode;
+  /** 会話での言い方。会話の中にあることを確かめた文だけを入れる。 */
+  said?: string;
+  /** AIが読み取った値（YYYY-MM-DD か HH:mm）。採用はしていない。 */
+  value?: string;
+}
 
 /** 通話内容から読み取った予定の下書き。分からない項目は推測せず null のまま本人に見せる。 */
 export interface AppointmentDraft {
@@ -128,8 +163,18 @@ export interface AppointmentDraft {
   startTime: string | null;
   /** HH:mm（24時間表記） */
   endTime: string | null;
+  /** 施設・店・駅・待ち合わせ場所の名前。 */
   location: string;
+  /** 会話で話された住所。話されていなければ空文字。 */
+  address: string;
   details: string;
+  /**
+   * 日時の根拠として会話から抜き出した言葉（「明日」「午後2時半」など）。
+   * 会話の中にあることを確かめたものだけ。本人が値と見比べるために出す。
+   */
+  spoken?: { date?: string; time?: string };
+  /** AIの日時を採用しなかった理由。なければ undefined か空。 */
+  issues?: AppointmentIssue[];
 }
 
 export const CALL_ROLES = ['patient', 'hospital'] as const;

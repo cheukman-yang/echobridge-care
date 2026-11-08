@@ -349,7 +349,8 @@ describe('通話の分離', () => {
 
       a.patient.send({ type: 'end_call' });
 
-      expect((await a.patient.waitFor('end_call')).appointment.date).toBe('2026-11-12');
+      // 日時は会話と照合するので、届いたかの目印には題名を使う。
+      expect((await a.patient.waitFor('end_call')).appointment.title).toBe('内科 初診予約');
       expect(await a.hospital.waitFor('call_ending')).toBeDefined();
       await flush(b);
       expect(a.hospital.all('end_call')).toEqual([]);
@@ -691,7 +692,7 @@ describe('通話の分離', () => {
       const { snapshot } = await returning.waitFor('call_joined');
 
       expect(snapshot.phase).toBe('ended');
-      expect(snapshot.appointment?.appointment.date).toBe('2026-11-12');
+      expect(snapshot.appointment?.appointment.title).toBe('内科 初診予約');
     });
 
     it('発信中の再接続で、患者は招待を受け取れる', async () => {
