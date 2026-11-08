@@ -66,7 +66,9 @@ describe('Gemini 実API', () => {
 
       console.info(result.suggestions);
       expect(result.ai).toEqual({ source: 'gemini', model: config.model });
-      expect(result.suggestions).toHaveLength(3);
+      // 会話にない数字（「午後230」など）を含む候補は除くので、3つより少ないことがある。
+      expect(result.suggestions.length).toBeGreaterThanOrEqual(2);
+      for (const { text } of result.suggestions) expect(text).not.toMatch(/230|2:30|25時/);
     });
 
     it('否定の意味を変えずに整える', async () => {

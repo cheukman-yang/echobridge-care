@@ -44,6 +44,7 @@ function suggestionInstruction(purpose: CallPurpose): string {
 - 自然な話し言葉の日本語で、1候補は1文にする。
 - 1つ目は承諾・肯定、2つ目は別の日時や代替案、3つ目は質問や確認にする。状況に合わなければ、方向性が異なる3つにする。
 - 本人しか知らない事実（氏名、生年月日、症状、持病、都合のよい日時など）を作らない。
+- 相手の発言にある日時・時刻・数量は、相手の言い方のまま書く（例:「午後2時半」は「午後2時半」）。「230」「2:30」「14:30」のような書き方に変えず、数字を書き換えない。
 - 本人しか答えられないことを聞かれたら、「少々お待ちください。ただいま入力いたします。」のように時間をもらう候補を入れる。
 ${rulesBlock(PURPOSE_RULES[purpose].suggestion)}
 - tag は候補の方向性を3〜6文字で書く。
@@ -108,7 +109,7 @@ const SUGGESTIONS_RESPONSE_SCHEMA: Schema = {
         required: ['text', 'tag'],
         propertyOrdering: ['text', 'tag'],
         properties: {
-          text: { type: Type.STRING, description: '相手に読み上げる丁寧な1文' },
+          text: { type: Type.STRING, description: '相手に読み上げる丁寧な1文。日時や数字は相手の言い方のまま' },
           tag: { type: Type.STRING, description: '方向性を表す3〜6文字' },
         },
       },
@@ -182,6 +183,21 @@ function toContext(history: ChatTurn[]) {
 /** 相手の名前は本人の入力なので、分かっているときだけ渡す。 */
 function partnerField(partnerName: string | undefined) {
   return partnerName ? { 相手の名前: partnerName } : {};
+}
+
+/** 文の中の数字の並び。全角の数字は半角にそろえ、桁区切り（1,500）は外す。 */
+function digitRuns(text: string): string[] {
+  return text.normalize('NFKC').replace(/(\d),(?=\d{3})/g, '$1').match(/\d+/g) ?? [];
+}
+
+/**
+ * 会話（用件・相手の名前・発言）に出てこない数字を含む候補を除く。
+ * 相手の「午後2時半」を「午後230」「午後25時半」と書く崩れが実際のGeminiで約2割あった（2026-11-09、20回中4回）。
+ * 候補は本人のタップ1回で読み上げられ、数字の誤りに気づきにくいので、出す前に止める。本人が言っていない日時を作るのも防ぐ。
+ */
+export function dropUnsupportedNumbers(suggestions: SuggestionItem[], sources: string[]): SuggestionItem[] {
+  const allowed = new Set(sources.flatMap(digitRuns));
+  return suggestions.filter(({ text }) => digitRuns(text).every((run) => allowed.has(run)));
 }
 
 const GENERAL_FALLBACK: SuggestionItem[] = [
@@ -299,9 +315,24 @@ export function createAiAssistant(
         timeoutMs,
       });
 
-      return result.ok
-        ? { suggestions: result.data.suggestions, ai: result.ai }
-        : { suggestions: buildFallbackSuggestions(latestUtterance, purpose), ai: result.ai };
+      if (!result.ok) {
+        return { suggestions: buildFallbackSuggestions(latestUtterance, purpose), ai: result.ai };
+      }
+      const sources = [intent, partnerName ?? '', latestUtterance, ...history.map(({ text }) => text)];
+      const suggestions = dropUnsupportedNumbers(result.data.suggestions, sources);
+      const dropped = result.data.suggestions.length - suggestions.length;
+      if (dropped > 0) {
+        // 本文は残さない。除いた数だけを記録する。
+        console.warn(JSON.stringify({ severity: 'WARNING', message: 'suggestions_dropped_numbers', dropped }));
+      }
+      if (suggestions.length === 0) {
+        // 使える候補が残らなかった。AIの回答に見せず、定型文として明示する。
+        return {
+          suggestions: buildFallbackSuggestions(latestUtterance, purpose),
+          ai: { source: 'fallback', reason: 'invalid_response' },
+        };
+      }
+      return { suggestions, ai: result.ai };
     },
 
     async polishText({ text, intent, purpose = DEFAULT_CALL_PURPOSE, partnerName, history }) {

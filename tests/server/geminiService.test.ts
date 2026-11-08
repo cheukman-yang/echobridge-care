@@ -78,6 +78,98 @@ describe('suggestReplies', () => {
     expect(result.ai).toEqual({ source: 'fallback', reason: 'invalid_response' });
     expect(result.suggestions).not.toEqual(twoOnly.suggestions);
   });
+
+  describe('日時や数字を、相手の言い方から変えない', () => {
+    const timeInput = {
+      intent: '内科の初診予約をしたいです',
+      partnerName: 'ひまわり医院',
+      history: [
+        { sender: '患者' as const, text: '内科の初診予約をしたいです' },
+        { sender: '病院受付' as const, text: '明日の午後2時半はいかがですか' },
+      ],
+      latestUtterance: '明日の午後2時半はいかがですか',
+    };
+    const reply = (texts: string[]) =>
+      jsonReply({ suggestions: texts.map((text, i) => ({ text, tag: `案${i + 1}` })) });
+
+    it('相手の言い方のまま書くよう、指示に入れる', async () => {
+      const models = createFakeModels(() => jsonReply(threeSuggestions));
+
+      await createAiAssistant(createFakeRunner(models)).suggestReplies(timeInput);
+
+      expect(String(models.generateContent.mock.calls[0][0].config?.systemInstruction)).toContain('相手の言い方のまま');
+    });
+
+    // 実際のGeminiで、相手の「午後2時半」が「午後230」「午後25時半」になった。そのまま読み上げると意味が変わる。
+    it('会話に出てこない数字を含む候補は出さない', async () => {
+      const assistant = createAiAssistant(
+        createFakeRunner(
+          createFakeModels(() =>
+            reply(['明日の午後230でお願いします。', '明日の午後2時半でお願いします。', '持ち物はありますか。']),
+          ),
+        ),
+      );
+
+      const result = await assistant.suggestReplies(timeInput);
+
+      expect(result.suggestions.map(({ text }) => text)).toEqual(['明日の午後2時半でお願いします。', '持ち物はありますか。']);
+      expect(result.ai).toEqual({ source: 'gemini', model: TEST_MODEL });
+    });
+
+    it('本人が言っていない日時を作った候補も出さない', async () => {
+      const assistant = createAiAssistant(
+        createFakeRunner(
+          createFakeModels(() => reply(['明後日の10時はいかがでしょうか。', 'はい、お願いします。', '少々お待ちください。'])),
+        ),
+      );
+
+      const result = await assistant.suggestReplies(timeInput);
+
+      expect(result.suggestions.map(({ text }) => text)).toEqual(['はい、お願いします。', '少々お待ちください。']);
+    });
+
+    it('全角の数字も同じ数字として扱い、用件や相手の名前の数字は使ってよい', async () => {
+      const assistant = createAiAssistant(
+        createFakeRunner(
+          createFakeModels(() =>
+            reply(['11月12日の午後2時半でお願いします。', '第3診療所でよろしいですか。', 'はい。']),
+          ),
+        ),
+      );
+
+      const result = await assistant.suggestReplies({
+        ...timeInput,
+        intent: '11月12日の予約を変えたいです',
+        partnerName: '第3診療所',
+        latestUtterance: '午後２時半はいかがですか',
+      });
+
+      expect(result.suggestions).toHaveLength(3);
+    });
+
+    it('桁区切りの有無は同じ数字として扱う', async () => {
+      const assistant = createAiAssistant(
+        createFakeRunner(createFakeModels(() => reply(['1,500円ですね。承知しました。', '1500円で大丈夫です。', 'はい。']))),
+      );
+
+      const result = await assistant.suggestReplies({ ...timeInput, latestUtterance: '初診は1500円ほどかかります' });
+
+      expect(result.suggestions).toHaveLength(3);
+    });
+
+    it('使える候補が残らなければ、定型文として理由を示す', async () => {
+      const assistant = createAiAssistant(
+        createFakeRunner(
+          createFakeModels(() => reply(['午後230でお願いします。', '2:30でお願いします。', '25時半でお願いします。'])),
+        ),
+      );
+
+      const result = await assistant.suggestReplies(timeInput);
+
+      expect(result.ai).toEqual({ source: 'fallback', reason: 'invalid_response' });
+      expect(result.suggestions.map(({ text }) => text).join('')).not.toMatch(/230|2:30|25時/);
+    });
+  });
 });
 
 describe('buildFallbackSuggestions', () => {
