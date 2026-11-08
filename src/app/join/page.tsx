@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect, useEffectEvent, useCallback } from 'react';
 import { Mic, Phone, PhoneOff } from 'lucide-react';
-import { CallNotice } from '@/components/AiStatusBadge';
+import { CallNotice, MockModeNotice } from '@/components/AiStatusBadge';
 import { DemoDataNotice } from '@/components/DemoDataNotice';
 import { AppHeader, CallStatus } from '@/components/AppHeader';
 import type { CallStatusTone } from '@/components/AppHeader';
@@ -168,6 +168,8 @@ export default function HospitalApp() {
   const [isReadingAloud, setIsReadingAloud] = useState(false);
   // 押して開始した録音（もう一度押すまで続く）か。
   const [isLatched, setIsLatched] = useState(false);
+  // 開発用のモックサーバーにつないでいる。文字起こしは台本なので、画面で明示する。
+  const [isMockMode, setIsMockMode] = useState(false);
 
   const channel = useCallChannel('hospital');
 
@@ -502,7 +504,9 @@ export default function HospitalApp() {
   }, [queueSpeech, startRingtone, stopRingtone]);
 
   const handleServerMessage = useCallback((data: ServerMessage) => {
-    if (data.type === 'speech_status') {
+    if (data.type === 'ai_status') {
+      setIsMockMode(data.backend === 'mock');
+    } else if (data.type === 'speech_status') {
       setSpeechStatus(data.status);
     } else if (data.type === 'call_joined') {
       applySnapshot(data.snapshot, data.seatToken);
@@ -772,9 +776,10 @@ export default function HospitalApp() {
         }
       />
 
-      {bannerText && (
+      {(bannerText || isMockMode) && (
         <div className="border-b border-line bg-surface">
-          <div className="mx-auto max-w-[1440px] px-4 py-2.5 lg:px-6">
+          <div className="mx-auto max-w-[1440px] space-y-2 px-4 py-2.5 lg:px-6">
+            <MockModeNotice active={isMockMode} />
             <CallNotice text={bannerText} />
           </div>
         </div>

@@ -1,5 +1,5 @@
 import { Send, Undo2 } from 'lucide-react';
-import { AI_FAILURE_LABELS } from '@/lib/aiMeta';
+import { AI_FAILURE_LABELS, MOCK_AI_MODEL } from '@/lib/aiMeta';
 import { MAX_PATIENT_TEXT_LENGTH } from '@/lib/callProtocol';
 import { findNumberChanges } from '@/lib/composer';
 import type { ComposerState, SpeechChoice } from '@/lib/composer';
@@ -40,7 +40,9 @@ export function PolishReviewPanel({
   return (
     <section aria-label="送信前の確認" className="space-y-4">
       {isReviewing ? (
-        <h2 className="text-[17px] font-bold">AIの案を確認してください</h2>
+        <h2 className="text-[17px] font-bold">
+          {state.model === MOCK_AI_MODEL ? 'モックの案を確認してください（開発用・AIではありません）' : 'AIの案を確認してください'}
+        </h2>
       ) : (
         <Notice tone="caution" role="alert" title="AIで整えられませんでした">
           {AI_FAILURE_LABELS[state.reason]}。入力した文は変更していません。

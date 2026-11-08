@@ -1159,3 +1159,40 @@ describe('レビュー指摘: 終了画面の予定の状態', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 });
+
+describe('開発用のモックモード', () => {
+  const MOCK: AiMeta = { source: 'gemini', model: 'mock-dev-only' };
+
+  it('モックサーバーにつないだら、帯とバッジでAIではないと示し続ける', () => {
+    renderConnectedCall();
+    receive({ type: 'ai_status', configured: true, backend: 'mock', model: 'mock-dev-only' });
+
+    expect(screen.getByTestId('mock-mode-notice').textContent).toContain('Gemini と Speech-to-Text は使っていません');
+    expect(screen.getByTestId('ai-status').textContent).toBe('モック（開発用）');
+  });
+
+  it('モックの候補はAIの返答候補と表示せず、Gemini応答とも表示しない', () => {
+    renderConnectedCall();
+    receive({ type: 'ai_status', configured: true, backend: 'mock', model: 'mock-dev-only' });
+    receive({ type: 'suggestions', suggestions: [{ text: 'はい。', tag: '承諾' }], ai: MOCK });
+
+    expect(screen.getByText(/モックの返答候補です/)).toBeTruthy();
+    expect(screen.queryByText(/AIの返答候補（/)).toBeNull();
+    expect(screen.getByTestId('ai-status').textContent).toBe('モック（開発用）');
+  });
+
+  it('モックの整形案は、AIの案として見出しを出さない', () => {
+    renderConnectedCall();
+    const requestId = requestPolish('あした行きます');
+    polishResult(requestId, 'あした行きます', '恐れ入りますが、あした行きます。', MOCK);
+
+    expect(screen.getByRole('heading', { name: /モックの案を確認してください/ })).toBeTruthy();
+  });
+
+  it('本番のサーバーでは帯を出さない', () => {
+    renderConnectedCall();
+    receive({ type: 'ai_status', configured: true, backend: 'vertex', model: 'gemini-test' });
+
+    expect(screen.queryByTestId('mock-mode-notice')).toBeNull();
+  });
+});

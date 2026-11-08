@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { CalendarPlus } from 'lucide-react';
+import { MOCK_AI_MODEL } from '@/lib/aiMeta';
 import { buildCalendarUrl, isReadyForCalendar } from '@/lib/appointment';
 import type { AppointmentDraft, AppointmentField } from '@/lib/callProtocol';
 import { buttonClass } from './ui';
@@ -70,7 +71,11 @@ export function AppointmentReviewCard({ appointment, source }: AppointmentReview
 
   return (
     <div className="space-y-4 rounded-xl border border-line bg-surface p-5">
-      {source.kind === 'ai' ? (
+      {source.kind === 'ai' && source.model === MOCK_AI_MODEL ? (
+        <p className="text-[14px] font-bold leading-relaxed text-caution">
+          開発用のモックが台本から作った下書きです（AIではありません）。「AIの読み取り」の印は、画面の確認のために付けています。
+        </p>
+      ) : source.kind === 'ai' ? (
         <p className="text-[14px] leading-relaxed text-ink-2">
           Geminiが通話内容から読み取った下書きです（{source.model}）。「AIの読み取り」と付いた項目はAIが入れた値です。正しいか確かめてから追加してください。
         </p>

@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { PhoneOff, RotateCcw } from 'lucide-react';
-import { AiStatusBadge, CallNotice, SpeechUnavailableNotice } from '@/components/AiStatusBadge';
+import { AiStatusBadge, CallNotice, MockModeNotice, SpeechUnavailableNotice } from '@/components/AiStatusBadge';
 import { AppHeader, CallStatus } from '@/components/AppHeader';
 import type { CallStatusTone } from '@/components/AppHeader';
 import { CallFlowGuide, CallSetupForm } from '@/components/CallSetupForm';
@@ -465,7 +465,8 @@ export default function PatientApp() {
   const status = describeCallStatus(callState, isConnected, peerConnected, isHospitalSpeaking);
   const isInCall = callState === 'connected';
   const bannerText = connectionNotice ?? callNotice;
-  const hasNotices = speechStatus === 'unavailable' || Boolean(bannerText);
+  const isMockMode = aiStatus?.backend === 'mock';
+  const hasNotices = isMockMode || speechStatus === 'unavailable' || Boolean(bannerText);
 
   return (
     <div className="flex h-dvh flex-col bg-canvas">
@@ -515,6 +516,7 @@ export default function PatientApp() {
       {hasNotices && (
         <div className="border-b border-line bg-surface">
           <div className="mx-auto max-w-[1440px] space-y-2 px-4 py-2.5 lg:px-6">
+            <MockModeNotice active={isMockMode} />
             <SpeechUnavailableNotice status={speechStatus} />
             <CallNotice text={bannerText} />
           </div>

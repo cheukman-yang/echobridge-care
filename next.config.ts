@@ -6,6 +6,10 @@ const nextConfig: NextConfig = {
   redirects() {
     return [{ source: "/hospital", destination: "/join", permanent: false }];
   },
+  // 開発サーバーを同じLANの別の端末から開くときのホスト名（scripts/dev.mjs が設定する）。本番の動作は変わらない。
+  allowedDevOrigins: process.env.EB_ALLOWED_DEV_ORIGINS?.split(",")
+    .map((host) => host.trim())
+    .filter(Boolean),
   cacheComponents: true,
   partialPrefetching: true,
   turbopack: {

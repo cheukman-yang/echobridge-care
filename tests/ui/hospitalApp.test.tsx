@@ -1146,3 +1146,33 @@ describe('レビュー指摘: 読み上げと録音の整合、録音の操作',
     expect(socket().sentOfType('hospital_speaking_start')).toHaveLength(1);
   });
 });
+
+describe('開発用のモックモード（相手の画面）', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    window.sessionStorage.clear();
+    window.history.replaceState(null, '', '/join');
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it('モックサーバーにつないだら、文字起こしが台本だと示す', () => {
+    render(<HospitalApp />);
+    act(() => socket().open());
+    receive({ type: 'ai_status', configured: true, backend: 'mock', model: 'mock-dev-only' });
+
+    expect(screen.getByTestId('mock-mode-notice').textContent).toContain('文字起こし');
+  });
+
+  it('本番のサーバーでは帯を出さない', () => {
+    render(<HospitalApp />);
+    act(() => socket().open());
+    receive({ type: 'ai_status', configured: true, backend: 'vertex', model: 'gemini-test' });
+
+    expect(screen.queryByTestId('mock-mode-notice')).toBeNull();
+  });
+});

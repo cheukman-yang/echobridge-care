@@ -22,7 +22,16 @@ export type AiMeta =
   | { source: 'gemini'; model: string }
   | { source: 'fallback'; reason: AiFailureReason };
 
-export type AiBackend = 'vertex' | 'api_key';
+/** mock は開発用のモックサーバー（scripts/mock-server.ts）。実際のAIは使わない。 */
+export type AiBackend = 'vertex' | 'api_key' | 'mock';
+
+/** 開発用のモックが結果に付けるモデル名。画面はこれを見て、AIの結果と区別して表示する。 */
+export const MOCK_AI_MODEL = 'mock-dev-only';
+
+/** 開発用のモックの結果か。台本の結果をAIの回答に見せないために使う。 */
+export function isMockAi(meta: AiMeta | null | undefined): boolean {
+  return meta?.source === 'gemini' && meta.model === MOCK_AI_MODEL;
+}
 
 /** サーバーの設定状態。接続の確認ではないので、configured でも実際の呼び出しは失敗し得る。 */
 export interface AiStatus {
