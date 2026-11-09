@@ -117,7 +117,12 @@ export function PolishReviewPanel({
           <Send className="size-4" aria-hidden />
           入力した文をそのまま送る
         </button>
-        <button type="button" onClick={onClose} className={buttonClass('quiet', 'md', wide ? undefined : 'w-full')}>
+        {/* 文字だけのボタンは押せる所に見えにくいので、枠のあるボタンにする。送るボタンより目立たせない。 */}
+        <button
+          type="button"
+          onClick={onClose}
+          className={buttonClass('secondary', 'md', wide ? undefined : 'w-full')}
+        >
           <Undo2 className="size-4" aria-hidden />
           送らずに入力へ戻る
         </button>
