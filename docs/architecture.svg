@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900" font-family="'BIZ UDPGothic','Yu Gothic UI','Yu Gothic','Meiryo','Noto Sans JP',sans-serif">
   <title>EchoBridge アーキテクチャ</title>
-  <desc>本人と相手のブラウザがCloud Runの通話サーバーにWebSocketでつながり、Speech-to-Text、Vertex AIのGemini、Text-to-Speechを使う。本人が確定した文だけが相手に読み上げられる。</desc>
+  <desc>本人と相手のブラウザがCloud Runの通話サーバーにWebSocketでつながり、Speech-to-Text、Vertex AIのGemini、Text-to-Speechを使う。AIの案は本人が確定するまで相手に届かない。相手に読み上げられるのは、本人が選んで確定した文と、発信前に確かめたあいさつ・返事を待ってもらう定型の案内だけ。</desc>
   <defs>
     <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
       <path d="M0 0 L10 5 L0 10 z" fill="#4c585c"/>
@@ -25,7 +25,7 @@
   <rect width="1600" height="900" fill="#ffffff"/>
 
   <text class="title" x="40" y="58">EchoBridge アーキテクチャ</text>
-  <text class="lead" x="40" y="94">Web通話とAIの中継を Cloud Run の1サービスで行い、本人が確定した文だけを相手に読み上げる</text>
+  <text class="lead" x="40" y="94">Web通話とAIの中継を Cloud Run の1サービスで行い、AIの案は本人が確定するまで相手に届けない</text>
 
   <!-- 本人のブラウザ -->
   <rect x="30" y="124" width="350" height="560" rx="16" fill="#ffffff" stroke="#9aa6a8" stroke-width="2"/>
@@ -35,7 +35,7 @@
   <text class="item" x="66" y="231">相手の発言の字幕</text>
   <text class="detail" x="66" y="254">途中結果つき</text>
   <rect class="card" x="50" y="278" width="310" height="62" rx="10"/>
-  <text class="item" x="66" y="305">AIの返答候補3つ</text>
+  <text class="item" x="66" y="305">AIの返答候補（通常3つ）</text>
   <text class="detail" x="66" y="328">即答フレーズ・登録した文</text>
   <rect class="card" x="50" y="352" width="310" height="62" rx="10"/>
   <text class="item" x="66" y="379">入力 → AIで整える</text>
@@ -47,17 +47,17 @@
   <text class="item" x="66" y="527">通話後の予定の下書き</text>
   <text class="detail" x="66" y="550">日時・場所を確認して直す</text>
   <rect x="50" y="584" width="310" height="84" rx="10" fill="#d9efed"/>
-  <text class="note" x="66" y="618">本人が「送る」を押した文だけが</text>
-  <text class="note" x="66" y="644">相手に読み上げられる</text>
+  <text class="note" x="66" y="612">本人が選んで確定した文だけが</text>
+  <text class="note" x="66" y="636">相手に読み上げられる</text>
+  <text class="detail" x="66" y="658">例外：確認済みのあいさつ・定型の案内</text>
 
   <!-- Google Cloud -->
   <rect x="440" y="124" width="720" height="560" rx="18" fill="#f7f9f9" stroke="#9aa6a8" stroke-width="2" stroke-dasharray="8 6"/>
   <text class="h" x="464" y="160">Google Cloud</text>
-  <text class="sub" x="1136" y="160" text-anchor="end">asia-northeast1</text>
 
   <rect x="470" y="178" width="660" height="190" rx="14" fill="#ffffff" stroke="#00696b" stroke-width="2.5"/>
   <text class="run" x="492" y="212">Cloud Run</text>
-  <text class="sub" x="1108" y="212" text-anchor="end">1サービス・インスタンス1台</text>
+  <text class="sub" x="1108" y="212" text-anchor="end">asia-northeast1・1サービス・インスタンス1台</text>
   <rect class="card" x="492" y="228" width="300" height="56" rx="10"/>
   <text class="item" x="508" y="252">Next.js の画面</text>
   <text class="detail" x="508" y="274">/（本人）と /join（相手）</text>
@@ -74,7 +74,7 @@
   <text class="detail" x="486" y="518">ja-JP・途中結果つき</text>
   <rect x="700" y="432" width="200" height="118" rx="14" fill="#ffffff" stroke="#9aa6a8" stroke-width="2"/>
   <text class="api" x="716" y="466">Gemini</text>
-  <text class="detail" x="716" y="494">Vertex AI</text>
+  <text class="detail" x="716" y="494">Vertex AI（global）</text>
   <text class="detail" x="716" y="518">gemini-3.5-flash-lite</text>
   <rect x="930" y="432" width="200" height="118" rx="14" fill="#ffffff" stroke="#9aa6a8" stroke-width="2"/>
   <text class="api" x="946" y="466">Text-to-Speech</text>
@@ -93,7 +93,7 @@
   <text class="detail" x="486" y="640">コンテナイメージ</text>
   <rect x="810" y="584" width="320" height="80" rx="12" fill="#ffffff" stroke="#d3d9da" stroke-width="2"/>
   <text class="item" x="826" y="616">Cloud Logging</text>
-  <text class="detail" x="826" y="640">件数と時間だけ（会話の本文は出さない）</text>
+  <text class="detail" x="826" y="640">件数・時間・AIの出所など（本文は出さない）</text>
 
   <!-- 相手のブラウザ -->
   <rect x="1220" y="124" width="350" height="560" rx="16" fill="#ffffff" stroke="#9aa6a8" stroke-width="2"/>
@@ -139,11 +139,11 @@
   <circle cx="474" cy="784" r="13" fill="#00696b"/><text class="num" x="474" y="789" text-anchor="middle">2</text>
   <text class="step" x="496" y="790">音声を文字にして、両方の画面に字幕を出す</text>
   <circle cx="474" cy="820" r="13" fill="#00696b"/><text class="num" x="474" y="825" text-anchor="middle">3</text>
-  <text class="step" x="496" y="826">Geminiが返答候補を3つ作る（本人の画面だけ）</text>
+  <text class="step" x="496" y="826">Geminiが返答候補を作る（通常3つ。本人の画面だけ）</text>
   <circle cx="474" cy="856" r="13" fill="#00696b"/><text class="num" x="474" y="861" text-anchor="middle">4</text>
   <text class="step" x="496" y="862">本人が候補・即答・入力から選んで確定する</text>
   <circle cx="1024" cy="748" r="13" fill="#00696b"/><text class="num" x="1024" y="753" text-anchor="middle">5</text>
-  <text class="step" x="1046" y="754">確定した文だけを音声にする</text>
+  <text class="step" x="1046" y="754">確定した文を音声にする</text>
   <circle cx="1024" cy="784" r="13" fill="#00696b"/><text class="num" x="1024" y="789" text-anchor="middle">6</text>
   <text class="step" x="1046" y="790">相手の端末で読み上げ、再生を本人に報告する</text>
   <circle cx="1024" cy="820" r="13" fill="#00696b"/><text class="num" x="1024" y="825" text-anchor="middle">7</text>
