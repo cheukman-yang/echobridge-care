@@ -19,6 +19,7 @@ import type {
   CallSnapshot,
   CallTurn,
   ChatTurn,
+  RecordingCancelReason,
   RecordingFailureReason,
   ServerMessage,
   SpeechEngine,
@@ -428,11 +429,24 @@ export class CallRoom {
     }
   }
 
-  stopRecording(): void {
+  /**
+   * 相手の画面が録音を取り消した。認識の結果は待たない。
+   * 本文はないので、理由・マイクの準備にかかった時間・届いた音声の長さだけをログに残し、実機の不具合を見分ける。
+   */
+  stopRecording(details: { reason?: RecordingCancelReason; prepMs?: number } = {}): void {
+    const wasRecording = this.isHospitalRecording;
+    const audioMs = Math.round(this.recordedAudioBytes / AUDIO_BYTES_PER_MS);
     this.isHospitalRecording = false;
     this.speechCapture = null;
     this.closeRecognitionStream();
     this.broadcast({ type: 'hospital_speaking_stop' });
+    logEvent('INFO', 'recording_cancelled', {
+      callId: this.id,
+      reason: details.reason ?? 'unspecified',
+      prepMs: details.prepMs ?? null,
+      audioMs,
+      wasRecording,
+    });
   }
 
   writeAudio(chunk: Buffer): void {
@@ -466,7 +480,8 @@ export class CallRoom {
     }
   }
 
-  async finishHospitalSpeech(): Promise<void> {
+  /** prepMs は、相手の画面が押してからマイクの準備ができるまでの時間。ログにだけ使う。 */
+  async finishHospitalSpeech(prepMs?: number): Promise<void> {
     const capture = this.speechCapture;
     const recognition = this.recognition;
     // 結果を待つ間に次の録音が始まると数え直すので、先に読む。
@@ -492,6 +507,7 @@ export class CallRoom {
         audioMs,
         relayedMs,
         relayDroppedMs,
+        prepMs: prepMs ?? null,
         recognized: (capture?.text ?? '') !== '',
       });
     }

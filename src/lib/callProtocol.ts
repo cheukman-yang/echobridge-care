@@ -318,6 +318,24 @@ export type SpeechStatus = 'checking' | 'ready' | 'unavailable';
 /** 録音を続けられなかった理由。失敗した音声は届かないので、必ず本人に知らせる。 */
 export type RecordingFailureReason = 'start_failed' | 'stream_failed';
 
+/**
+ * 相手の画面が録音を取り消した理由。画面の動きには使わず、実機で録音できなかったときにサーバーのログで原因を見分ける。
+ * - not_ready: マイクの準備ができる前に止めた（STTには何も届いていない）
+ * - no_audio: 録音中と表示したのに、マイクの音が1つも届かなかった
+ * - mic_*: マイクを開けなかった（許可・端末・ほかのアプリなど）
+ */
+export const RECORDING_CANCEL_REASONS = [
+  'not_ready',
+  'no_audio',
+  'mic_denied',
+  'mic_missing',
+  'mic_busy',
+  'mic_insecure',
+  'mic_unsupported',
+  'mic_failed',
+] as const;
+export type RecordingCancelReason = (typeof RECORDING_CANCEL_REASONS)[number];
+
 /** サーバーからブラウザへ送るメッセージ。 */
 export type ServerMessage =
   | ({ type: 'ai_status' } & AiStatus)
@@ -371,8 +389,13 @@ export type ClientMessage =
   | { type: 'join_call'; seatToken: string }
   | { type: 'answer_call' }
   | { type: 'hospital_speaking_start' }
-  | { type: 'hospital_speaking_stop' }
-  | { type: 'hospital_speech_end' }
+  /**
+   * 録音を取り消す（認識の結果を待たない）。reason と prepMs はログで原因を見分けるためだけに使う。
+   * prepMs は押してからマイクの準備ができるまでの時間。準備ができる前に止めたときは、押してから止めるまでの時間。
+   */
+  | { type: 'hospital_speaking_stop'; reason?: RecordingCancelReason; prepMs?: number }
+  /** 話し終えた。認識の結果を待って発話にする。prepMs は押してからマイクの準備ができるまでの時間（ログ用）。 */
+  | { type: 'hospital_speech_end'; prepMs?: number }
   /** durationMs は、相手の端末で鳴らす音声の長さ（Google音声の started だけ）。本人の画面で残り時間の目安に使う。 */
   | { type: 'speech_playback'; seq: number; status: PlaybackStatus; engine?: SpeechEngine; durationMs?: number }
   /** 本人が、相手の声を自分の端末で聞くかを選ぶ。席に入るたびに送り直す（サーバーは接続ごとに忘れる）。 */

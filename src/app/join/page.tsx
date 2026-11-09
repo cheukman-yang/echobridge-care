@@ -120,12 +120,14 @@ type MicFailure = 'mic_denied' | 'mic_missing' | 'mic_busy' | 'mic_insecure' | '
  * 録音の後に出す知らせ。サーバーの失敗の理由に、文字にならなかった場合と、マイクの問題を足す。
  * 画面の中に出す。alert はアプリ内のブラウザで出ないことがあり、出ると通話の画面が隠れる。
  */
-type RecordingNotice = RecordingFailureReason | 'no_speech' | 'no_audio' | MicFailure;
+type RecordingNotice = RecordingFailureReason | 'no_speech' | 'no_audio' | 'not_ready' | MicFailure;
 
 const RECORDING_FAILURE_LABELS: Record<RecordingNotice, string> = {
   start_failed: '録音を開始できませんでした。音声は送られていません。',
   stream_failed: '音声認識が中断しました。もう一度話してください。',
   no_speech: '声を聞き取れませんでした。相手には何も届いていません。もう一度話してください。',
+  not_ready:
+    'マイクの準備ができる前に止めたため、録音していません。相手には何も届いていません。もう一度押し、「録音中です」と表示されてから話してください。',
   no_audio: 'マイクの音を受け取れませんでした。相手には何も届いていません。もう一度押してください。続くときは画面を読み込み直してください。',
   mic_denied: 'マイクの使用が許可されていません。ブラウザの設定で、このサイトのマイクを許可してください。',
   mic_missing: 'マイクが見つかりません。マイクを接続してから、もう一度押してください。',
@@ -237,6 +239,8 @@ export default function HospitalApp() {
   // 今の録音で送ったサンプルの数と、録音中と表示した時刻。マイクの音が届かない端末を見分ける。
   const capturedSamplesRef = useRef(0);
   const recordingSinceRef = useRef(0);
+  // 押した時刻。マイクの準備にかかった時間をサーバーのログに残し、端末ごとの遅さを見分ける。
+  const pressedAtRef = useRef(0);
 
   // 着信音用の管理Ref
   const ringtoneTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -457,9 +461,10 @@ export default function HospitalApp() {
       setRecordingPhase('recording');
     } catch (error) {
       if (attempt !== captureAttemptRef.current) return;
+      const failure = micFailure(error);
       releaseMic();
-      setRecordingFailure(micFailure(error));
-      channel.send({ type: 'hospital_speaking_stop' });
+      setRecordingFailure(failure);
+      channel.send({ type: 'hospital_speaking_stop', reason: failure, prepMs: Date.now() - pressedAtRef.current });
     }
   }, [channel, getQueue, releaseMic, setRecordingPhase]);
 
@@ -740,6 +745,7 @@ export default function HospitalApp() {
     }
     setRecordingFailure(null);
     setRecordingPhase('awaiting_server');
+    pressedAtRef.current = Date.now();
     if (!channel.send({ type: 'hospital_speaking_start' })) {
       setRecordingPhase('idle');
       return false;
@@ -751,19 +757,26 @@ export default function HospitalApp() {
   const stopRecording = () => {
     const phase = recordingPhaseRef.current;
     if (phase === 'idle') return;
+    const now = Date.now();
+    // マイクの準備ができる前に止めた（押し続けて話し、準備中に離したなど）。STTには何も届いていないので、
+    // 結果を待たずに取り消す。「聞き取れなかった」と出すと、言い直せば届くと誤解される。
+    if (phase !== 'recording') {
+      releaseMic();
+      setRecordingFailure('not_ready');
+      channel.send({ type: 'hospital_speaking_stop', reason: 'not_ready', prepMs: now - pressedAtRef.current });
+      return;
+    }
+    const prepMs = recordingSinceRef.current - pressedAtRef.current;
     // 録音中と表示してからしばらくたっても、マイクの音が1つも届いていない。認識しても空なので結果を待たずに取り消し、
     // 「聞き取れなかった」ではなくマイクの問題として知らせる。大きな声で言い直しても直らないため。
-    const noAudio =
-      phase === 'recording' &&
-      capturedSamplesRef.current === 0 &&
-      Date.now() - recordingSinceRef.current >= NO_AUDIO_NOTICE_MS;
+    const noAudio = capturedSamplesRef.current === 0 && now - recordingSinceRef.current >= NO_AUDIO_NOTICE_MS;
     releaseMic();
     if (noAudio) {
       setRecordingFailure('no_audio');
-      channel.send({ type: 'hospital_speaking_stop' });
+      channel.send({ type: 'hospital_speaking_stop', reason: 'no_audio', prepMs });
       return;
     }
-    channel.send({ type: 'hospital_speech_end' });
+    channel.send({ type: 'hospital_speech_end', prepMs });
   };
 
   /** 押して開始した録音にする。止め忘れても上限の時間で終える。 */

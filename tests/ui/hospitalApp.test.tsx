@@ -117,6 +117,8 @@ function speakIntoMic() {
 const MIC_DENIED_NOTICE = 'マイクの使用が許可されていません。ブラウザの設定で、このサイトのマイクを許可してください。';
 const NO_AUDIO_NOTICE =
   'マイクの音を受け取れませんでした。相手には何も届いていません。もう一度押してください。続くときは画面を読み込み直してください。';
+const NOT_READY_NOTICE =
+  'マイクの準備ができる前に止めたため、録音していません。相手には何も届いていません。もう一度押し、「録音中です」と表示されてから話してください。';
 
 describe('病院の録音', () => {
   let track: { stop: ReturnType<typeof vi.fn> };
@@ -327,7 +329,7 @@ describe('病院の録音', () => {
 
       expect(failureNotice()).toBe(NO_AUDIO_NOTICE);
       expect(socket().sentOfType('hospital_speech_end')).toEqual([]);
-      expect(socket().sentOfType('hospital_speaking_stop')).toHaveLength(1);
+      expect(socket().sentOfType('hospital_speaking_stop')).toMatchObject([{ reason: 'no_audio' }]);
       expect(track.stop).toHaveBeenCalled();
       expect(pttLabel()).toBe('押すと録音を始めます');
     });
@@ -439,7 +441,7 @@ describe('病院の録音', () => {
       expect(failureNotice()).toBe(MIC_DENIED_NOTICE);
       // アプリ内のブラウザでは alert が出ないことがあり、出ると通話の画面が隠れる。
       expect(alert).not.toHaveBeenCalled();
-      expect(socket().sentOfType('hospital_speaking_stop')).toHaveLength(1);
+      expect(socket().sentOfType('hospital_speaking_stop')).toMatchObject([{ reason: 'mic_denied' }]);
       expect(pttLabel()).toBe('押すと録音を始めます');
     });
 
@@ -479,7 +481,8 @@ describe('病院の録音', () => {
   });
 
   describe('不要になったマイクを残さない', () => {
-    it('マイクが開く前に指を離したら、開いた時点で閉じる', async () => {
+    // 実機（Android）で、準備中に離した録音が「聞き取れなかった」と出ていた。STTには何も届いていないので取り消す。
+    it('マイクが開く前に指を離したら、開いた時点で閉じ、認識を待たずに取り消して理由を伝える', async () => {
       let openMic: (stream: unknown) => void = () => {};
       getUserMedia.mockImplementation(() => new Promise((resolve) => { openMic = resolve; }));
       renderConnectedCall();
@@ -493,10 +496,14 @@ describe('病院の録音', () => {
 
       expect(track.stop).toHaveBeenCalled();
       expect(pttLabel()).toBe('押すと録音を始めます');
-      expect(socket().sentOfType('hospital_speech_end')).toHaveLength(1);
+      expect(socket().sentOfType('hospital_speech_end')).toEqual([]);
+      const [stop] = socket().sentOfType('hospital_speaking_stop');
+      expect(stop).toMatchObject({ reason: 'not_ready' });
+      expect(stop.prepMs).toBeGreaterThanOrEqual(1_000);
+      expect(failureNotice()).toBe(NOT_READY_NOTICE);
     });
 
-    it('受け付けの前に指を離したら、マイクを開かない', async () => {
+    it('受け付けの前に指を離したら、マイクを開かず、取り消して理由を伝える', async () => {
       renderConnectedCall();
       fireEvent.pointerDown(ptt());
       holdLongEnough();
@@ -505,6 +512,21 @@ describe('病院の録音', () => {
       await serverAccepts();
 
       expect(getUserMedia).not.toHaveBeenCalled();
+      expect(socket().sentOfType('hospital_speech_end')).toEqual([]);
+      expect(socket().sentOfType('hospital_speaking_stop')).toMatchObject([{ reason: 'not_ready' }]);
+      expect(failureNotice()).toBe(NOT_READY_NOTICE);
+    });
+
+    it('録音中と表示してから終えたら、マイクの準備にかかった時間を添えて発話の終わりを送る', async () => {
+      await renderRecordingCall();
+      speakIntoMic();
+      holdLongEnough();
+      fireEvent.pointerUp(ptt());
+
+      const [end] = socket().sentOfType('hospital_speech_end');
+      expect(end.prepMs).toBeGreaterThanOrEqual(0);
+      expect(end.prepMs).toBeLessThan(1_000);
+      expect(failureNotice()).toBeNull();
     });
 
     it('リセットされたらマイクを閉じる', async () => {

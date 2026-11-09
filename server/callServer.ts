@@ -10,6 +10,7 @@ import {
   DEFAULT_SPEECH_VOICE,
   MAX_PATIENT_TEXT_LENGTH,
   PLAYBACK_STATUSES,
+  RECORDING_CANCEL_REASONS,
   SPEECH_ENGINES,
   SPEECH_ORIGINS,
   SPEECH_VOICES,
@@ -67,6 +68,17 @@ const SpeechPlaybackSchema = z.object({
 });
 
 const PartnerAudioListenSchema = z.object({ enabled: z.boolean() });
+
+/**
+ * 録音の取り消しと終わりに付く、ログで原因を見分けるための値。古い画面は付けない。
+ * 壊れた値は捨てるだけで、録音の操作そのものは断らない（断ると相手の録音が止まらなくなる）。
+ */
+const PrepMsSchema = z.number().int().nonnegative().max(10 * 60 * 1000).optional().catch(undefined);
+const RecordingStopSchema = z.object({
+  reason: z.enum(RECORDING_CANCEL_REASONS).optional().catch(undefined),
+  prepMs: PrepMsSchema,
+});
+const SpeechEndSchema = z.object({ prepMs: PrepMsSchema });
 
 const TurnSeqSchema = z.object({ seq: z.number().int().positive() });
 
@@ -383,12 +395,16 @@ export function attachCallServer(
         case 'hospital_speaking_start':
           room.startRecording();
           break;
-        case 'hospital_speaking_stop':
-          room.stopRecording();
+        case 'hospital_speaking_stop': {
+          const parsed = RecordingStopSchema.safeParse(data);
+          room.stopRecording(parsed.success ? parsed.data : {});
           break;
-        case 'hospital_speech_end':
-          await room.finishHospitalSpeech();
+        }
+        case 'hospital_speech_end': {
+          const parsed = SpeechEndSchema.safeParse(data);
+          await room.finishHospitalSpeech(parsed.success ? parsed.data.prepMs : undefined);
           break;
+        }
         case 'speech_playback': {
           const parsed = SpeechPlaybackSchema.safeParse(data);
           if (parsed.success) {
