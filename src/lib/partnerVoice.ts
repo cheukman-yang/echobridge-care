@@ -13,6 +13,12 @@ import { PARTNER_AUDIO_SAMPLE_RATE_HZ } from './callProtocol';
  * 再読み込みの後などで止まっていたら needs_gesture にし、次のタップで再開する。
  */
 
+/**
+ * 再開に使う操作。ブラウザが「利用者の操作」と認めるのは、タッチでは指を離したとき（pointerup・touchend）と
+ * click で、押した瞬間（pointerdown）は認めない（iPhoneのSafariとAndroidのChrome）。マウスとキーは押した時点で認める。
+ */
+const GESTURE_EVENTS = ['pointerup', 'touchend', 'click', 'keydown'] as const;
+
 /** 切り替えのボタンに付ける印。画面のどこかを押したときの自動の再開から外す。 */
 export const PARTNER_VOICE_TOGGLE_ATTRIBUTE = 'data-partner-voice-toggle';
 
@@ -319,15 +325,13 @@ export class PartnerVoicePlayer {
   private addGestureListener(): void {
     if (this.gestureListening || typeof window === 'undefined') return;
     this.gestureListening = true;
-    window.addEventListener('pointerdown', this.onAnyGesture, true);
-    window.addEventListener('keydown', this.onAnyGesture, true);
+    GESTURE_EVENTS.forEach((type) => window.addEventListener(type, this.onAnyGesture, true));
   }
 
   private removeGestureListener(): void {
     if (!this.gestureListening || typeof window === 'undefined') return;
     this.gestureListening = false;
-    window.removeEventListener('pointerdown', this.onAnyGesture, true);
-    window.removeEventListener('keydown', this.onAnyGesture, true);
+    GESTURE_EVENTS.forEach((type) => window.removeEventListener(type, this.onAnyGesture, true));
   }
 }
 
@@ -336,7 +340,12 @@ export const PARTNER_VOICE_KEY = 'echobridge.partnerVoice.v1';
 
 const preferenceListeners = new Set<() => void>();
 
+// 保存できないブラウザ（保存を禁止した設定など）でも、このページを開いている間は選んだとおりにする。
+// 保存に失敗したときだけ、このページで選んだ値を使う。
+let unsavedPreference: boolean | null = null;
+
 export function loadPartnerVoicePreference(): boolean {
+  if (unsavedPreference !== null) return unsavedPreference;
   try {
     return window.localStorage.getItem(PARTNER_VOICE_KEY) === 'on';
   } catch {
@@ -347,8 +356,9 @@ export function loadPartnerVoicePreference(): boolean {
 export function savePartnerVoicePreference(enabled: boolean): void {
   try {
     window.localStorage.setItem(PARTNER_VOICE_KEY, enabled ? 'on' : 'off');
+    unsavedPreference = null;
   } catch {
-    // 保存できなくても、この通話の間は選んだとおりに動く。
+    unsavedPreference = enabled;
   }
   preferenceListeners.forEach((listener) => listener());
 }

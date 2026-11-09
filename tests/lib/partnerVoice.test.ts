@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_LAG_S,
   PARTNER_VOICE_TOGGLE_ATTRIBUTE,
   PartnerVoicePlayer,
   START_LEAD_S,
+  loadPartnerVoicePreference,
   pcm16ToFloat32,
+  savePartnerVoicePreference,
 } from '@/lib/partnerVoice';
 import type { PartnerVoiceState } from '@/lib/partnerVoice';
 import { FakeAudioContext as FakeContext } from '../helpers/fakeAudioContext';
@@ -104,11 +106,27 @@ describe('相手の声の再生', () => {
     expect(context.scheduled).toHaveLength(0);
 
     context.allowResume = true;
+    // タッチで押した瞬間（pointerdown）は、ブラウザが操作と認めないので使わない。
     document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    await flush();
+    expect(player.state).toBe('needs_gesture');
+    document.body.dispatchEvent(new Event('touchend', { bubbles: true }));
     await flush();
     expect(player.state).toBe('on');
     // 再開を試している間は「オン」のまま待ち、動かないと分かってから「停止中」にする。
     expect(states).toEqual(['on', 'needs_gesture', 'on']);
+  });
+
+  it('保存できないブラウザでも、選んだ値をこのページの間は覚える', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('SecurityError');
+    });
+    savePartnerVoicePreference(true);
+    expect(loadPartnerVoicePreference()).toBe(true);
+    savePartnerVoicePreference(false);
+    expect(loadPartnerVoicePreference()).toBe(false);
+    setItem.mockRestore();
+    savePartnerVoicePreference(false);
   });
 
   it('切り替えのボタンを押したときは自動で再開せず、ボタンの処理に任せる', async () => {
@@ -119,7 +137,7 @@ describe('相手の声の再生', () => {
     const toggle = document.createElement('button');
     toggle.setAttribute(PARTNER_VOICE_TOGGLE_ATTRIBUTE, '');
     document.body.append(toggle);
-    toggle.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    toggle.dispatchEvent(new Event('click', { bubbles: true }));
     await flush();
     expect(player.state).toBe('needs_gesture');
     toggle.remove();
