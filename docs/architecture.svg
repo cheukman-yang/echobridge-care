@@ -33,7 +33,7 @@
   <text class="sub" x="50" y="184">発話が難しい人（/）</text>
   <rect class="card" x="50" y="204" width="310" height="62" rx="10"/>
   <text class="item" x="66" y="231">相手の発言の字幕</text>
-  <text class="detail" x="66" y="254">途中結果つき</text>
+  <text class="detail" x="66" y="254">途中結果つき・希望すれば相手の声も聞ける</text>
   <rect class="card" x="50" y="278" width="310" height="62" rx="10"/>
   <text class="item" x="66" y="305">AIの返答候補（通常3つ）</text>
   <text class="detail" x="66" y="328">即答フレーズ・登録した文</text>
