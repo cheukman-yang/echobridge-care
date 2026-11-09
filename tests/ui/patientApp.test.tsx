@@ -1191,7 +1191,7 @@ describe('相手の端末での読み上げの状態', () => {
     expect(log.getAllByText('送信済み').length).toBeGreaterThan(0);
 
     receive({ type: 'speech_playback', seq: 2, status: 'started', engine: 'device' });
-    expect(log.getByText('読み上げ中（端末の読み上げ機能）')).toBeTruthy();
+    expect(log.getByText('相手の端末で読み上げ中（端末の読み上げ機能）')).toBeTruthy();
 
     receive({ type: 'speech_playback', seq: 2, status: 'ended', engine: 'device' });
     expect(log.getByText('相手の端末で再生済み（端末の読み上げ機能）')).toBeTruthy();
@@ -1249,7 +1249,7 @@ describe('相手の端末での読み上げの状態', () => {
     expect(log.getByText('もう一度読み上げるよう依頼しました')).toBeTruthy();
 
     receive({ type: 'speech_playback', seq: 2, status: 'started', engine: 'cloud' });
-    expect(log.getByText('読み上げ中（Google音声）')).toBeTruthy();
+    expect(log.getByText('相手の端末で読み上げ中（Google音声）')).toBeTruthy();
   });
 
   it('読み直しのボタンは、再生できなかった文と最後に送った文にだけ出す', () => {

@@ -16,6 +16,13 @@ export const CALL_SOCKET_PATH = '/ws/call';
  */
 export const STT_SAMPLE_RATE_HZ = 16000;
 
+/**
+ * 相手の声を本人の画面で鳴らすための中継（バイナリのフレーム）。中身は相手の画面がSTTへ送る音声と同じで、
+ * 16bit・モノラル・STT_SAMPLE_RATE_HZ のPCM。届くのは、相手が録音している間で、本人が聞くと選んだ（partner_audio_listen）ときだけ。
+ * サーバーは保存もログへの記録もしない。
+ */
+export const PARTNER_AUDIO_SAMPLE_RATE_HZ = STT_SAMPLE_RATE_HZ;
+
 /** 同じ席に新しい接続が入り、古い接続を閉じたときのクローズコード。 */
 export const CLOSE_CODE_SEAT_TAKEN = 4001;
 
@@ -337,7 +344,7 @@ export type ServerMessage =
       ai: AiMeta;
     }
   | { type: 'patient_speech'; text: string; origin: SpeechOrigin; seq: number }
-  | { type: 'speech_playback'; seq: number; status: PlaybackStatus; engine?: SpeechEngine }
+  | { type: 'speech_playback'; seq: number; status: PlaybackStatus; engine?: SpeechEngine; durationMs?: number }
   /**
    * サーバーで音声を合成できるか。サーバー全体の情報で、通話の内容を含まない。
    * 使えないと分かっていれば、相手の画面は音声を待たずに端末の声で読む。
@@ -366,7 +373,10 @@ export type ClientMessage =
   | { type: 'hospital_speaking_start' }
   | { type: 'hospital_speaking_stop' }
   | { type: 'hospital_speech_end' }
-  | { type: 'speech_playback'; seq: number; status: PlaybackStatus; engine?: SpeechEngine }
+  /** durationMs は、相手の端末で鳴らす音声の長さ（Google音声の started だけ）。本人の画面で残り時間の目安に使う。 */
+  | { type: 'speech_playback'; seq: number; status: PlaybackStatus; engine?: SpeechEngine; durationMs?: number }
+  /** 本人が、相手の声を自分の端末で聞くかを選ぶ。席に入るたびに送り直す（サーバーは接続ごとに忘れる）。 */
+  | { type: 'partner_audio_listen'; enabled: boolean }
   /** 相手の画面が、まだ受け取っていない本人の発言の音声を求める（再接続・再読み込みの後など）。 */
   | { type: 'speech_audio_request'; seq: number }
   /** 本人が、自分の文を相手の端末でもう一度読み上げるよう頼む。新しい発言にはしない。 */

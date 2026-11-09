@@ -14,7 +14,7 @@ export class FakeWebSocket {
   onopen: (() => void) | null = null;
   onclose: ((event: { code: number }) => void) | null = null;
   onerror: (() => void) | null = null;
-  onmessage: ((event: { data: string }) => void) | null = null;
+  onmessage: ((event: { data: string | ArrayBuffer }) => void) | null = null;
 
   constructor(public url: string) {
     FakeWebSocket.instances.push(this);
@@ -44,6 +44,11 @@ export class FakeWebSocket {
 
   receive(message: ServerMessage) {
     this.onmessage?.({ data: JSON.stringify(message) });
+  }
+
+  /** バイナリのフレーム（中継された相手の声）を受け取る。 */
+  receiveAudio(chunk: ArrayBuffer) {
+    this.onmessage?.({ data: chunk });
   }
 
   sentOfType(type: string) {

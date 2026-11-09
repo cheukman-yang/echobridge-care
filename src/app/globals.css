@@ -25,16 +25,21 @@
   min-height: 0;
 }
 
+/*
+ * 狭い画面では、会話の記録の高さを決めた割合（--eb-log-size）に固定し、返答の欄は残りを全部使う。
+ * 欄の高さが中身（候補の数、入力欄、登録文の数）で変わらないので、方法を切り替えても
+ * 記録・タブ・即答フレーズの位置が動かない。中身が多いときは欄の中でスクロールする。
+ */
 .eb-call--narrow {
-  --eb-log-min: 28%;
+  --eb-log-size: 30%;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(var(--eb-log-min), 1fr) auto minmax(0, auto) auto auto;
+  grid-template-rows: var(--eb-log-size) auto minmax(0, 1fr) auto auto;
   grid-template-areas: "log" "tabs" "panel" "error" "quick";
 }
 
-/* AIに頼んでから確認を終えるまでは、原文・案・送るボタンに高さを回す。 */
+/* AIに頼んでから確認を終えるまでは、原文・案・送るボタンに高さを回す（本人が「AIで整える」を押したときだけ変わる）。 */
 .eb-call--narrow.eb-call--expanded {
-  --eb-log-min: 18%;
+  --eb-log-size: 20%;
 }
 
 .eb-call--wide {
@@ -51,7 +56,7 @@
 /* 低い画面（キーボード表示中など）。記録は2〜3行分だけ残し、入力欄と送るボタンを優先する。 */
 @media (max-height: 560px) {
   .eb-call.eb-call--narrow {
-    --eb-log-min: clamp(2.75rem, 20%, 6rem);
+    --eb-log-size: clamp(2.75rem, 20%, 6rem);
   }
 }
 
@@ -166,4 +171,27 @@ input::-webkit-date-and-time-value {
 
 .eb-scroll-row::-webkit-scrollbar {
   display: none;
+}
+
+/*
+ * 返答候補の「新着」。別の方法を開いている間に届いた候補を、塗りと点と言葉で知らせる。
+ * 届いたときに一度だけ輪を広げて目を引く。動きを減らす設定では動かさない（塗りと言葉は残る）。
+ */
+@keyframes eb-attention {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-voice) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 10px color-mix(in srgb, var(--color-voice) 0%, transparent);
+  }
+}
+
+.eb-attention {
+  animation: eb-attention 0.9s ease-out 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eb-attention {
+    animation: none;
+  }
 }

@@ -12,6 +12,9 @@ const PILL_NEUTRAL = 'border-line bg-surface text-ink-2';
 
 const MOCK_BADGE = { label: 'モック（開発用）', title: 'AIは使っていません。台本の結果です', tone: PILL_WARN };
 
+/** 狭い画面で残す、印の先頭の部分。 */
+const SHORT_PREFIXES = ['Gemini', 'モック'];
+
 function describe(status: AiStatus | null, last: AiMeta | null) {
   if (last?.source === 'fallback') {
     return { label: 'AI未接続', title: AI_FAILURE_LABELS[last.reason], tone: PILL_WARN };
@@ -32,9 +35,18 @@ function describe(status: AiStatus | null, last: AiMeta | null) {
 export function AiStatusBadge({ status, last }: { status: AiStatus | null; last: AiMeta | null }) {
   const view = describe(status, last);
   if (!view) return null;
+  // 通話中の見出しは狭い画面で込み合うので、補足の部分（「応答」「（開発用）」）だけを省く。何のAIかは残す。
+  const short = SHORT_PREFIXES.find((prefix) => view.label.startsWith(prefix) && view.label !== prefix);
   return (
     <span data-testid="ai-status" className={cx(PILL_BASE, view.tone)} title={view.title}>
-      {view.label}
+      {short ? (
+        <>
+          {short}
+          <span className="max-sm:hidden">{view.label.slice(short.length)}</span>
+        </>
+      ) : (
+        view.label
+      )}
     </span>
   );
 }

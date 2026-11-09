@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react';
-import { RotateCcw } from 'lucide-react';
+import { RotateCcw, Volume2 } from 'lucide-react';
 import type { SpeechOrigin } from '@/lib/callProtocol';
 import { canRequestReplay, describeDelivery } from '@/lib/speechDelivery';
 import type { DeliveryTone, SpeechDelivery } from '@/lib/speechDelivery';
+import { PlaybackProgress } from './PlaybackProgress';
 import { cx } from './ui';
 
 export type MessageOrigin = SpeechOrigin | 'greeting' | 'notice';
@@ -44,8 +45,20 @@ interface ConversationLogProps {
   partnerLabel: string;
   isPartnerSpeaking: boolean;
   liveText: string;
+  /** 中継された相手の声を、この端末で今鳴らしているか（本人が「相手の声」をオンにしたときだけ）。 */
+  isPartnerAudible?: boolean;
   /** 相手の端末でもう一度読み上げてもらう。渡さなければボタンを出さない。 */
   onReplay?: (seq: number) => void;
+}
+
+/** 相手の声をこの端末で鳴らしている印。音が鳴っている間だけ出す（字幕の文字の位置とは合わせない）。 */
+function PartnerAudibleMark() {
+  return (
+    <span className="inline-flex items-center gap-1 font-bold text-voice-strong">
+      <Volume2 className="size-3.5" aria-hidden />
+      音声を再生中
+    </span>
+  );
 }
 
 /** これ以上下から離れていたら、本人が読み返しているとみなして自動で動かさない。 */
@@ -69,6 +82,7 @@ export function ConversationLog({
   partnerLabel,
   isPartnerSpeaking,
   liveText,
+  isPartnerAudible = false,
   onReplay,
 }: ConversationLogProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -101,6 +115,9 @@ export function ConversationLog({
   const latestOwnId = messages.findLast(
     (message) => message.sender === 'patient' && message.origin !== 'notice',
   )?.id;
+  // 相手が話し終えた直後は、遅れて届いた声の残りが少しだけ鳴る。その間は最後の発言に印を付ける。
+  const latestPartnerId = messages.findLast((message) => message.sender === 'hospital')?.id;
+  const audibleTailId = isPartnerAudible && !isPartnerSpeaking ? latestPartnerId : undefined;
 
   return (
     <div ref={scrollerRef} onScroll={onScroll} className="h-full overflow-y-auto overscroll-contain">
@@ -119,6 +136,13 @@ export function ConversationLog({
               );
             }
             const isMine = message.sender === 'patient';
+            const messageDelivery = isMine ? delivery[message.id] : undefined;
+            // 相手の端末で今鳴っている文。文は全部読めるまま、枠と進み具合の線で示す。
+            const isBeingRead = messageDelivery?.playback === 'started';
+            const progress =
+              isBeingRead && messageDelivery?.startedAt !== undefined && messageDelivery.durationMs !== undefined
+                ? { startedAt: messageDelivery.startedAt, durationMs: messageDelivery.durationMs }
+                : null;
             return (
               <li key={message.id} className={cx('flex flex-col gap-1.5', isMine ? 'items-end' : 'items-start')}>
                 <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-1 text-[13px]">
@@ -126,15 +150,27 @@ export function ConversationLog({
                   {isMine && message.origin && (
                     <span className="text-ink-2">{ORIGIN_LABELS[message.origin]}</span>
                   )}
+                  {message.id === audibleTailId && <PartnerAudibleMark />}
                 </p>
-                <p
+                <div
+                  data-reading={isBeingRead ? 'true' : undefined}
                   className={cx(
                     'max-w-[min(40rem,88%)] rounded-xl px-4 py-3 text-[17px] leading-(--leading-talk) text-pretty break-words short:py-2',
                     isMine ? 'bg-voice-soft text-ink' : 'border border-line bg-surface text-ink',
+                    // 読み上げ中は太い枠で囲む。色だけでなく、下の「読み上げ中」の文字と線でも伝える。
+                    isBeingRead && 'ring-2 ring-voice ring-offset-2 ring-offset-canvas',
                   )}
                 >
-                  {message.text}
-                </p>
+                  <p>{message.text}</p>
+                  {progress && (
+                    <PlaybackProgress
+                      key={progress.startedAt}
+                      startedAt={progress.startedAt}
+                      durationMs={progress.durationMs}
+                      className="mt-2"
+                    />
+                  )}
+                </div>
                 {isMine && (
                   <div className="flex flex-wrap items-center justify-end gap-x-2 px-1 text-[13px]">
                     <DeliveryBadge delivery={delivery[message.id]} ttsAvailable={ttsAvailable} />
@@ -166,9 +202,12 @@ export function ConversationLog({
 
         {isPartnerSpeaking && (
           <div className="mt-5 flex flex-col items-start gap-1.5" aria-hidden={!liveText}>
-            <p className="flex items-center gap-2 px-1 text-[13px] font-bold text-ink">
-              <span aria-hidden className="eb-live-dot size-2 rounded-full bg-danger" />
-              {partnerLabel}が話しています
+            <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-1 text-[13px] font-bold text-ink">
+              <span className="inline-flex items-center gap-2">
+                <span aria-hidden className="eb-live-dot size-2 rounded-full bg-danger" />
+                {partnerLabel}が話しています
+              </span>
+              {isPartnerAudible && <PartnerAudibleMark />}
             </p>
             <p className="max-w-[min(40rem,88%)] rounded-xl border border-dashed border-line-strong bg-surface px-4 py-3 text-[17px] leading-(--leading-talk) text-ink-2 text-pretty break-words">
               {liveText || '…'}

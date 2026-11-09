@@ -20,6 +20,12 @@ export interface SpeechDelivery {
   replayRequested?: boolean;
   /** 読み直しを頼んだ回数。サーバーと同じ上限で、ボタンを出すかを決める。 */
   replays?: number;
+  /**
+   * 相手の端末で鳴り始めた報告を受けた時刻（この端末の Date.now）と、相手が鳴らしている音声の長さ。
+   * 長さはGoogle音声のときだけ届く。文の進み具合（時間の割合）の目安に使い、文字の位置には合わせない。
+   */
+  startedAt?: number;
+  durationMs?: number;
 }
 
 export type DeliveryTone = 'muted' | 'live' | 'done' | 'warning' | 'danger';
@@ -40,7 +46,7 @@ export function describeDelivery(delivery: SpeechDelivery | undefined, ttsAvaila
   const engine = current.engine ? `（${ENGINE_LABELS[current.engine]}）` : '';
   switch (current.playback) {
     case 'started':
-      return { label: `読み上げ中${engine}`, tone: 'live' };
+      return { label: `相手の端末で読み上げ中${engine}`, tone: 'live' };
     case 'ended':
       return { label: `相手の端末で再生済み${engine}`, tone: 'done' };
     case 'blocked':

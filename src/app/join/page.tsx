@@ -1,11 +1,13 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useEffectEvent, useCallback } from 'react';
+import Link from 'next/link';
 import { Mic, Phone, PhoneOff, RotateCcw, Volume2 } from 'lucide-react';
 import { CallNotice, MockModeNotice } from '@/components/AiStatusBadge';
 import { DemoDataNotice } from '@/components/DemoDataNotice';
 import { AppHeader, CallStatus } from '@/components/AppHeader';
 import type { CallStatusTone } from '@/components/AppHeader';
+import { PlaybackProgress } from '@/components/PlaybackProgress';
 import { buttonClass, cx } from '@/components/ui';
 import { useCallChannel, useCallSocket } from '@/hooks/useCallChannel';
 import {
@@ -274,8 +276,9 @@ export default function HospitalApp() {
       device: createDeviceVoice(),
       isPaused: () => recordingPhaseRef.current !== 'idle' || isAudioBlockedRef.current,
       onState: setSpeech,
-      onReport: (seq, status: PlaybackStatus, engine) => {
-        if (channel.send({ type: 'speech_playback', seq, status, engine })) return;
+      onReport: (seq, status: PlaybackStatus, engine, durationMs) => {
+        const duration = durationMs !== undefined ? { durationMs } : {};
+        if (channel.send({ type: 'speech_playback', seq, status, engine, ...duration })) return;
         // つなぎ直して同じ席に戻ったら送る（call_joined）。
         const seatToken = channel.seatTokenRef.current;
         if (!seatToken) return;
@@ -908,7 +911,14 @@ export default function HospitalApp() {
                 {isConnected ? '通話に参加する' : 'サーバーに接続しています…'}
               </button>
               <p className="border-t border-line pt-4 text-[13px] leading-relaxed text-ink-2">
-                EchoBridgeは、発話が難しい人がAIの支援を受けて話すための通話です。相手の言葉は合成音声で読み上げられ、あなたの声は文字にして相手に届きます。インストールとログインは不要です。
+                EchoBridgeは、発話が難しい人がAIの支援を受けて話すための通話です。相手の言葉は合成音声で読み上げられ、あなたの声は文字にして相手に届きます（相手が選べば、押して話している間の声も相手に聞こえます）。インストールとログインは不要です。
+              </p>
+              <p className="text-[13px] text-ink-2">
+                自分から発信するときは
+                <Link href="/" className="ml-1 font-bold text-voice-strong underline underline-offset-2">
+                  通話の準備の画面
+                </Link>
+                へ。
               </p>
             </form>
           </div>
@@ -925,7 +935,7 @@ export default function HospitalApp() {
                   AI音声アシスタントを使う人からの通話です
                 </h1>
                 <p className="text-[15px] leading-relaxed text-ink-2 text-pretty">
-                  応答すると、相手が用意した文を合成音声で読み上げます。音量を上げてからお聞きください。
+                  応答すると、相手が用意した文を合成音声で読み上げます。音量を上げてからお聞きください。あなたが「押して話す」で話した声は文字にして相手に届き、相手が選んだときは声も聞こえます。
                 </p>
               </div>
               <dl className="divide-y divide-line rounded-xl border border-line bg-surface text-[15px]">
@@ -1000,17 +1010,39 @@ export default function HospitalApp() {
                             <span className="font-bold text-ink-2">音声を準備中</span>
                           )}
                         </p>
-                        <p
+                        <div
+                          data-reading={
+                            line.seq !== undefined && line.seq === speech.seq && speech.phase === 'playing'
+                              ? 'true'
+                              : undefined
+                          }
                           className={cx(
                             'max-w-[min(40rem,88%)] rounded-xl px-4 py-3 leading-(--leading-talk) text-pretty break-words select-text',
                             line.who === 'me'
                               ? 'bg-subtle text-[16px] text-ink'
                               : 'border border-line bg-surface text-[19px] text-ink',
-                            line.seq !== undefined && line.seq === speech.seq && 'border-voice ring-1 ring-voice',
+                            line.seq !== undefined &&
+                              line.seq === speech.seq &&
+                              (speech.phase === 'playing'
+                                ? 'border-voice bg-voice-soft ring-2 ring-voice ring-offset-2 ring-offset-canvas'
+                                : 'border-voice ring-1 ring-voice'),
                           )}
                         >
-                          {line.text}
-                        </p>
+                          <p>{line.text}</p>
+                          {/* 実際に鳴らしている音声の長さで進む線。文字の位置には合わせない。端末の声は長さが分からないので出さない。 */}
+                          {line.seq !== undefined &&
+                            line.seq === speech.seq &&
+                            speech.phase === 'playing' &&
+                            speech.startedAt !== undefined &&
+                            speech.durationMs !== undefined && (
+                              <PlaybackProgress
+                                key={speech.startedAt}
+                                startedAt={speech.startedAt}
+                                durationMs={speech.durationMs}
+                                className="mt-2"
+                              />
+                            )}
+                        </div>
                         {line.who === 'caller' && line.seq !== undefined && (
                           <button
                             type="button"

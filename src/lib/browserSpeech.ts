@@ -109,7 +109,9 @@ export function createHtmlAudioOutput(): AudioOutput {
       detach(el);
       releaseUrl();
       el.onplaying = () => {
-        if (isMine()) events.onStart();
+        // 長さは鳴り始めた時点で分かっている（MP3を丸ごと渡しているため）。分からなければ渡さない。
+        const seconds = el.duration;
+        if (isMine()) events.onStart(Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined);
       };
       el.onended = () => {
         if (isMine()) events.onEnd();

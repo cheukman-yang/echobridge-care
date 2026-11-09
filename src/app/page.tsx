@@ -1,11 +1,13 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { PhoneOff, RotateCcw } from 'lucide-react';
 import { AiStatusBadge, CallNotice, MockModeNotice, SpeechUnavailableNotice } from '@/components/AiStatusBadge';
 import { AppHeader, CallStatus } from '@/components/AppHeader';
 import type { CallStatusTone } from '@/components/AppHeader';
-import { CallFlowGuide, CallSetupForm } from '@/components/CallSetupForm';
+import Link from 'next/link';
+import { LogIn } from 'lucide-react';
+import { CallFlowGuide, CallSetupForm, JoinCallEntry } from '@/components/CallSetupForm';
 import { CallInviteCard } from '@/components/CallInviteCard';
 import { CallSummary } from '@/components/CallSummary';
 import { CustomPhrasesSection } from '@/components/CustomPhrases';
@@ -13,7 +15,8 @@ import type { TranscriptLine } from '@/components/CallSummary';
 import { ConversationLog, ORIGIN_LABELS } from '@/components/ConversationLog';
 import type { LogMessage } from '@/components/ConversationLog';
 import { CallWorkspace } from '@/components/CallWorkspace';
-import { buttonClass } from '@/components/ui';
+import { PartnerVoiceToggle } from '@/components/PartnerVoiceToggle';
+import { Notice, buttonClass } from '@/components/ui';
 import { useCallChannel, useCallSocket } from '@/hooks/useCallChannel';
 import type { AiMeta, AiStatus } from '@/lib/aiMeta';
 import {
@@ -23,7 +26,7 @@ import {
   RECONNECTING_NOTICE,
   SEAT_TAKEN_NOTICE,
 } from '@/lib/callNotices';
-import { DEFAULT_SPEECH_VOICE, TYPING_NOTICE_TEXT, keepsSuggestions } from '@/lib/callProtocol';
+import { DEFAULT_SPEECH_VOICE, JOIN_PATH, TYPING_NOTICE_TEXT, keepsSuggestions } from '@/lib/callProtocol';
 import type {
   AppointmentResult,
   CallInvite,
@@ -41,6 +44,13 @@ import type { SpeechDelivery } from '@/lib/speechDelivery';
 import { CALL_PURPOSE_PROFILES, DEFAULT_CALL_PURPOSE } from '@/lib/callPurpose';
 import type { CallPurpose } from '@/lib/callPurpose';
 import { INITIAL_COMPOSER, composerReducer, resolveConfirmedSpeech } from '@/lib/composer';
+import {
+  PartnerVoicePlayer,
+  loadPartnerVoicePreference,
+  savePartnerVoicePreference,
+  subscribePartnerVoicePreference,
+} from '@/lib/partnerVoice';
+import type { PartnerVoiceState } from '@/lib/partnerVoice';
 import type { SpeechChoice } from '@/lib/composer';
 
 const HOSPITAL_IDLE_NOTICE_MS = 5000;
@@ -116,8 +126,48 @@ export default function PatientApp() {
   const [invite, setInvite] = useState<CallInvite | null>(null);
   const [peerConnected, setPeerConnected] = useState(false);
   const [callNotice, setCallNotice] = useState<string | null>(null);
+  // 相手の声を自分の端末で聞くか（本人の選択。この端末に保存）と、今の再生の状態。
+  const listenToPartner = useSyncExternalStore(
+    subscribePartnerVoicePreference,
+    loadPartnerVoicePreference,
+    () => false,
+  );
+  const [partnerVoiceState, setPartnerVoiceState] = useState<PartnerVoiceState>('off');
+  const [isPartnerAudible, setIsPartnerAudible] = useState(false);
 
   const channel = useCallChannel('patient');
+
+  // 描画の中では使わない。初めて使う処理（発信・受信・操作）のときに作る。
+  const voicePlayerRef = useRef<PartnerVoicePlayer | null>(null);
+  const getVoicePlayer = useCallback((): PartnerVoicePlayer => {
+    voicePlayerRef.current ??= new PartnerVoicePlayer({
+      onState: setPartnerVoiceState,
+      onAudible: setIsPartnerAudible,
+    });
+    return voicePlayerRef.current;
+  }, []);
+
+  /** 通話を離れたら、相手の声の再生を止めて部品を閉じる。 */
+  const releaseVoicePlayer = useCallback(() => {
+    voicePlayerRef.current?.dispose();
+    voicePlayerRef.current = null;
+    setPartnerVoiceState('off');
+    setIsPartnerAudible(false);
+  }, []);
+
+  /**
+   * 席に入るたびに、相手の声を聞くかをサーバーへ伝える（サーバーは接続ごとに忘れる）。
+   * 聞くなら再生の部品を用意する。操作の外なので、ブラウザが止めていれば次のタップで再開する。
+   */
+  const syncPartnerVoice = useCallback((phase: CallPhase) => {
+    if (phase !== 'ringing' && phase !== 'connected') {
+      releaseVoicePlayer();
+      return;
+    }
+    const listen = loadPartnerVoicePreference();
+    channel.send({ type: 'partner_audio_listen', enabled: listen });
+    if (listen) getVoicePlayer().setEnabled(true, false);
+  }, [channel, getVoicePlayer, releaseVoicePlayer]);
 
   const [isTypingNoticeActive, setIsTypingNoticeActive] = useState(false);
   // WebSocketの受信処理から最新値を読むためのref。stateを依存に入れると接続を張り直してしまう。
@@ -195,7 +245,8 @@ export default function PatientApp() {
     setTypingNoticeActive(false);
     dispatchComposer({ type: 'close' });
     pendingSpeechQueueRef.current = [];
-  }, [clearIdleTimer, setTypingNoticeActive]);
+    releaseVoicePlayer();
+  }, [clearIdleTimer, releaseVoicePlayer, setTypingNoticeActive]);
 
   /** サーバーの状態に画面を合わせる。切断中に届かなかった分もここで取り戻す。 */
   const applySnapshot = useCallback((snapshot: CallSnapshot) => {
@@ -227,6 +278,7 @@ export default function PatientApp() {
       setSpeechStatus(data.status);
     } else if (data.type === 'call_joined') {
       applySnapshot(data.snapshot);
+      syncPartnerVoice(data.snapshot.phase);
     } else if (data.type === 'call_error') {
       const notice = CALL_ERROR_NOTICES[data.code];
       if (data.code === 'call_not_found') {
@@ -299,21 +351,39 @@ export default function PatientApp() {
     } else if (data.type === 'speech_synthesis') {
       updateDelivery(data.seq, { synthesis: data.status, synthesisReason: data.reason });
     } else if (data.type === 'speech_playback') {
-      updateDelivery(data.seq, { playback: data.status, engine: data.engine, replayRequested: false });
+      // 鳴り始めの時刻は、この端末で報告を受けた時刻。長さと合わせて「読み上げ中」の進み具合の目安にする。
+      const timing =
+        data.status === 'started'
+          ? { startedAt: Date.now(), durationMs: data.durationMs }
+          : { startedAt: undefined, durationMs: undefined };
+      updateDelivery(data.seq, { playback: data.status, engine: data.engine, replayRequested: false, ...timing });
     } else if (data.type === 'call_ending') {
       setCallState('analyzing');
       clearIdleTimer();
       dispatchComposer({ type: 'close' });
+      releaseVoicePlayer();
     } else if (data.type === 'end_call') {
       setAppointmentResult({ appointment: data.appointment, ai: data.ai });
       setLastAi(data.ai);
       setCallState('summary');
       clearIdleTimer();
+      releaseVoicePlayer();
     }
-  }, [appendTurn, applySnapshot, channel, clearIdleTimer, resetLocalCall, triggerIdleTimer, updateDelivery]);
+  }, [
+    appendTurn,
+    applySnapshot,
+    channel,
+    clearIdleTimer,
+    releaseVoicePlayer,
+    resetLocalCall,
+    syncPartnerVoice,
+    triggerIdleTimer,
+    updateDelivery,
+  ]);
 
   const isConnected = useCallSocket(channel, {
     onMessage: handleServerMessage,
+    onAudio: (chunk) => voicePlayerRef.current?.play(chunk),
     onDisconnected: () => {
       // 整形結果は切断後の接続へ返すとは限らないので、切れたら待ち続けない。
       dispatchComposer({ type: 'connection_lost' });
@@ -360,6 +430,24 @@ export default function PatientApp() {
     }
     setCallNotice(null);
     setCallState('ringing');
+    // 発信の操作の中で再生を許可しておく。相手が話すのは後なので、操作の外では鳴らせないブラウザがある。
+    if (listenToPartner) getVoicePlayer().setEnabled(true, true);
+  };
+
+  /**
+   * 相手の声を聞くかを切り替える。ブラウザが止めているだけなら、この操作で再開する（オフにはしない）。
+   * 選択はこの端末に保存し、次の通話でも使う。
+   */
+  const handleTogglePartnerVoice = () => {
+    const player = getVoicePlayer();
+    if (listenToPartner && player.state === 'needs_gesture') {
+      player.unlock();
+      return;
+    }
+    const next = !listenToPartner;
+    savePartnerVoicePreference(next);
+    player.setEnabled(next, true);
+    channel.send({ type: 'partner_audio_listen', enabled: next });
   };
 
   /** 送った文を、相手の端末でもう一度読み上げてもらう。新しい発言にはしない。 */
@@ -500,7 +588,10 @@ export default function PatientApp() {
   const isInCall = callState === 'connected';
   const bannerText = connectionNotice ?? callNotice;
   const isMockMode = aiStatus?.backend === 'mock';
-  const hasNotices = isMockMode || speechStatus === 'unavailable' || Boolean(bannerText);
+  const voiceStopped = isInCall && partnerVoiceState === 'needs_gesture';
+  const voiceUnavailable = isInCall && partnerVoiceState === 'unavailable';
+  const hasNotices =
+    isMockMode || speechStatus === 'unavailable' || Boolean(bannerText) || voiceStopped || voiceUnavailable;
 
   return (
     <div className="flex h-dvh flex-col bg-canvas">
@@ -518,6 +609,17 @@ export default function PatientApp() {
         actions={
           <>
             <AiStatusBadge status={aiStatus} last={lastAi} />
+            {/* 招待を受け取った人が、トップページから参加の画面へ進める入口。 */}
+            {callState === 'idle' && (
+              <Link href={JOIN_PATH} aria-label="通話に参加" className={buttonClass('secondary', 'md', 'max-sm:px-3')}>
+                <LogIn className="size-4" aria-hidden />
+                {/* 狭い画面では見出しを1行に収めるため短くする（「終了」と同じ形）。 */}
+                <span>
+                  <span className="max-sm:hidden">通話に</span>参加
+                </span>
+              </Link>
+            )}
+            {isInCall &&<PartnerVoiceToggle state={partnerVoiceState} onToggle={handleTogglePartnerVoice} />}
             {callState !== 'idle' && (
               <button
                 type="button"
@@ -553,6 +655,16 @@ export default function PatientApp() {
             <MockModeNotice active={isMockMode} />
             <SpeechUnavailableNotice status={speechStatus} />
             <CallNotice text={bannerText} />
+            {voiceStopped && (
+              <Notice tone="caution" role="status">
+                相手の声の再生をブラウザが止めています。画面のどこかを押すと再開します。字幕はそのまま届きます。
+              </Notice>
+            )}
+            {voiceUnavailable && (
+              <Notice tone="caution" role="status">
+                このブラウザでは相手の声を再生できません。字幕で会話を続けられます。
+              </Notice>
+            )}
           </div>
         </div>
       )}
@@ -574,6 +686,7 @@ export default function PatientApp() {
                 onStart={handleStartCall}
               />
               <div className="space-y-6 lg:pt-14">
+                <JoinCallEntry />
                 <CallFlowGuide />
                 <CustomPhrasesSection mode="setup" />
               </div>
@@ -605,6 +718,7 @@ export default function PatientApp() {
                 partnerLabel={partnerLabel}
                 isPartnerSpeaking={isHospitalSpeaking}
                 liveText={liveHospitalText}
+                isPartnerAudible={isPartnerAudible}
               />
             }
             partnerLabel={partnerLabel}

@@ -16,15 +16,24 @@ export const replyPanelId = (tab: ReplyTab) => `reply-panel-${tab}`;
 type MarkTone = 'new' | 'neutral' | 'caution';
 
 const MARK_TONES: Record<MarkTone, string> = {
-  new: 'bg-voice-soft text-voice-strong',
+  // 新着は見落とすと返事が遅れるので、塗りつぶし（白い文字）にして、ほかの印より強くする。
+  new: 'eb-attention bg-voice text-on-voice',
   neutral: 'bg-subtle text-ink-2',
   caution: 'bg-caution-soft text-caution',
 };
 
-/** タブの名前に添える小さな印。色だけに頼らず、言葉で状態を伝える。 */
+/** タブの名前に添える小さな印。色だけに頼らず、言葉（と新着は点の形）で状態を伝える。 */
 export function TabMark({ tone, children }: { tone: MarkTone; children: ReactNode }) {
   return (
-    <span className={cx('rounded-full px-1.5 py-px text-[12px] leading-snug font-bold', MARK_TONES[tone])}>
+    <span
+      data-tone={tone}
+      className={cx(
+        'inline-flex items-center gap-1 rounded-full px-1.5 py-px text-[12px] leading-snug font-bold',
+        tone === 'new' && 'px-2',
+        MARK_TONES[tone],
+      )}
+    >
+      {tone === 'new' && <span aria-hidden className="size-1.5 rounded-full bg-on-voice" />}
       {children}
     </span>
   );

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { AiMeta } from '@/lib/aiMeta';
@@ -86,6 +86,9 @@ export function CallWorkspace(props: CallWorkspaceProps) {
   const wide = useMediaQuery(WIDE_LAYOUT_QUERY, true);
   const [tab, setTab] = useState<ReplyTab>('suggestions');
   const panelScrollerRef = useRef<HTMLDivElement>(null);
+  const composeScrollerRef = useRef<HTMLDivElement>(null);
+  // 方法ごとのスクロール位置。切り替えて戻ったとき、見ていた所（登録文の途中など）に戻す。
+  const scrollPositions = useRef<Partial<Record<ReplyTab, number>>>({});
   const phrases = useCustomPhrases();
   const canSend = !isPartnerSpeaking;
 
@@ -106,11 +109,22 @@ export function CallWorkspace(props: CallWorkspaceProps) {
   }
   const hasNewSuggestions = suggestionsKey !== '' && suggestionsKey !== seenSuggestionsKey;
 
+  const scrollerFor = (id: ReplyTab) => (id === 'compose' ? composeScrollerRef.current : panelScrollerRef.current);
+
   const selectTab = (next: ReplyTab) => {
+    if (next === tab) return;
+    // 閉じる方法の位置を覚える。返答候補と登録文は同じ枠でスクロールするので、方法ごとに分けて持つ。
+    const current = scrollerFor(tab);
+    if (current) scrollPositions.current[tab] = current.scrollTop;
     setTab(next);
-    // 前に開いていた方法のスクロール位置を持ち越さない。
-    if (panelScrollerRef.current) panelScrollerRef.current.scrollTop = 0;
   };
+
+  // 開いた方法の位置を、描いた直後（見える前）に戻す。初めて開く方法は先頭から。
+  useLayoutEffect(() => {
+    if (wide) return;
+    const scroller = tab === 'compose' ? composeScrollerRef.current : panelScrollerRef.current;
+    if (scroller) scroller.scrollTop = scrollPositions.current[tab] ?? 0;
+  }, [tab, wide]);
 
   // AIに頼んでから確認を終えるまでは、手入力の部分に高さを回し、原文・案・送るボタンを近くに置く。
   // 広げるのは「AIで整える」を押したとき（本人の操作）で、案が届いたときには動かさない。
@@ -168,6 +182,10 @@ export function CallWorkspace(props: CallWorkspaceProps) {
       </section>
 
       {wide ? null : <ReplyTabs active={tab} onSelect={selectTab} marks={marks} className="[grid-area:tabs]" />}
+      {/* 別の方法を開いている間に届いた候補を、読み上げソフトにも一度だけ知らせる。 */}
+      <p className="sr-only" aria-live="polite">
+        {!wide && hasNewSuggestions && tab !== 'suggestions' ? '新しい返答候補が届きました。「返答候補」で確認できます。' : ''}
+      </p>
 
       <div
         ref={panelScrollerRef}
@@ -208,6 +226,7 @@ export function CallWorkspace(props: CallWorkspaceProps) {
 
       {/* 手入力とAI案の確認。広い画面では記録の下、狭い画面では「入力」の中身。どちらでも同じ要素のまま。 */}
       <div
+        ref={composeScrollerRef}
         {...panelProps('compose')}
         className={cx(
           'min-h-0 overflow-y-auto overscroll-contain bg-surface',

@@ -176,6 +176,11 @@ export interface SpeechRecognizer {
 /** 席に座る接続。WebSocketに依存させず、通話の処理を読みやすくする。 */
 export interface CallPeer {
   send(message: ServerMessage): void;
+  /**
+   * 相手の声（録音の音声）をバイナリのまま送る。回線が詰まっていて送らなかったら false。
+   * 持たない接続（テストの偽物など）には中継しない。
+   */
+  sendAudio?(chunk: Buffer): boolean;
   /** 席から外す。evicted は同じ席に新しい接続が入った場合で、この接続を閉じる。 */
   release(reason: 'call_closed' | 'evicted'): void;
 }
@@ -297,6 +302,11 @@ export class CallRoom {
   private speechCapture: SpeechCapture | null = null;
   // 今の発話でSTTへ書いた音声の量。実機で音声が届いたかをログで確かめる（本文は残さない）。
   private recordedAudioBytes = 0;
+  // 今の発話で本人の画面へ中継した音声の量と、回線が詰まって送らなかった量。中継が実機で届いたかをログで確かめる。
+  private relayedAudioBytes = 0;
+  private droppedRelayBytes = 0;
+  // 本人が相手の声を自分の端末で聞くと選んでいるか。接続ごとに選び直してもらうので、席が空いたら忘れる。
+  private isPatientListening = false;
   private isHospitalRecording = false;
   private isPatientSpeaking = false;
   private recognition: Recognition | null = null;
@@ -360,6 +370,8 @@ export class CallRoom {
       seat.peer = null;
       previous.release('evicted');
     }
+    // 新しい接続は、席に入った後に聞くかどうかを送ってくる。それまでは中継しない。
+    if (role === 'patient') this.isPatientListening = false;
 
     seat.peer = peer;
     peer.send({
@@ -405,6 +417,8 @@ export class CallRoom {
   startRecording(): void {
     this.speechCapture = new SpeechCapture();
     this.recordedAudioBytes = 0;
+    this.relayedAudioBytes = 0;
+    this.droppedRelayBytes = 0;
     this.isHospitalRecording = this.openRecognitionStream();
     // 画面はこの配信を受け付けの合図にして、届くまで録音中と表示しない。
     if (this.isHospitalRecording) {
@@ -426,6 +440,29 @@ export class CallRoom {
     if (this.isHospitalRecording && stream?.writable) {
       stream.write(chunk);
       this.recordedAudioBytes += chunk.length;
+      this.relayToPatient(chunk);
+    }
+  }
+
+  /** 本人が相手の声を聞くかを選ぶ。聞かないなら音声は本人の画面へ送らない。 */
+  setPartnerAudioListening(enabled: boolean): void {
+    if (this.isPatientListening === enabled) return;
+    this.isPatientListening = enabled;
+    logEvent('INFO', 'partner_audio_listen', { callId: this.id, enabled });
+  }
+
+  /**
+   * STTへ送ったのと同じ音声を、本人の画面へ送る。相手が録音している間（押して話している間）だけ届く。
+   * 音声は保存せず、ログにも残さない。回線が詰まっていれば捨て、遅れを積み上げない。
+   */
+  private relayToPatient(chunk: Buffer): void {
+    if (!this.isPatientListening || this.phase !== 'connected') return;
+    const peer = this.seats.patient.peer;
+    if (!peer?.sendAudio) return;
+    if (peer.sendAudio(chunk)) {
+      this.relayedAudioBytes += chunk.length;
+    } else {
+      this.droppedRelayBytes += chunk.length;
     }
   }
 
@@ -434,6 +471,8 @@ export class CallRoom {
     const recognition = this.recognition;
     // 結果を待つ間に次の録音が始まると数え直すので、先に読む。
     const audioMs = Math.round(this.recordedAudioBytes / AUDIO_BYTES_PER_MS);
+    const relayedMs = Math.round(this.relayedAudioBytes / AUDIO_BYTES_PER_MS);
+    const relayDroppedMs = Math.round(this.droppedRelayBytes / AUDIO_BYTES_PER_MS);
     this.speechCapture = null;
     this.recognition = null;
     this.isHospitalRecording = false;
@@ -451,6 +490,8 @@ export class CallRoom {
         ended,
         usedInterim: capture?.hasInterim ?? false,
         audioMs,
+        relayedMs,
+        relayDroppedMs,
         recognized: (capture?.text ?? '') !== '',
       });
     }
@@ -538,14 +579,16 @@ export class CallRoom {
    * 相手の端末が読み上げた結果を本人に知らせる。本人の発言でない番号は無視する。
    * 読み終えた後に始まりの報告が遅れて届いても、終わった状態を戻さない。
    */
-  reportPlayback(seq: number, status: PlaybackStatus, engine?: SpeechEngine): void {
+  reportPlayback(seq: number, status: PlaybackStatus, engine?: SpeechEngine, durationMs?: number): void {
     const turn = this.patientTurn(seq);
     if (!turn) return;
     const isFinal = turn.playback === 'ended' || turn.playback === 'failed';
     if ((status === 'started' || status === 'blocked') && isFinal) return;
     turn.playback = status;
     turn.playbackEngine = engine;
-    this.sendTo('patient', { type: 'speech_playback', seq, status, ...(engine ? { engine } : {}) });
+    // 長さは「読み上げ中」の目安にだけ使う。始まりの報告にだけ付ける。
+    const duration = status === 'started' && durationMs !== undefined ? { durationMs } : {};
+    this.sendTo('patient', { type: 'speech_playback', seq, status, ...(engine ? { engine } : {}), ...duration });
     if (status === 'failed' || status === 'blocked') {
       logEvent('WARNING', 'playback_failed', { callId: this.id, status, engine });
     }
@@ -781,6 +824,8 @@ export class CallRoom {
   private vacate(role: CallRole): void {
     this.stopActivity(role);
     this.seats[role].peer = null;
+    // 戻ってきた本人の画面が選び直す。古い選択のまま、聞いていない画面へ送らない。
+    if (role === 'patient') this.isPatientListening = false;
     this.sendTo(otherRole(role), { type: 'peer_status', connected: false });
     this.refreshAbandonTimer();
   }

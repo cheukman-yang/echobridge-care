@@ -13,7 +13,8 @@ import type { PlaybackStatus, SpeechAudio, SpeechEngine } from './callProtocol';
  */
 
 export interface PlaybackEvents {
-  onStart(): void;
+  /** durationMs は鳴らす音声の長さ。分かるとき（サーバーの音声）だけ渡す。端末の声では分からない。 */
+  onStart(durationMs?: number): void;
   onEnd(): void;
   /** blocked: ブラウザが自動再生を止めた。利用者の操作の後なら再生できる。 */
   onError(kind: 'blocked' | 'failed'): void;
@@ -51,6 +52,12 @@ export interface SpeechQueueState {
   /** 鳴らしている、または音声を待っている文の番号。自動案内は null。 */
   seq: number | null;
   phase: 'idle' | 'waiting' | 'playing';
+  /**
+   * 鳴り始めを確かめた時刻（Date.now）と、音声の長さ。長さが分かるのはサーバーの音声だけ。
+   * 画面は文の進み具合（時間の割合）を出すのに使う。文字ごとの位置は分からないので、文字には合わせない。
+   */
+  startedAt?: number;
+  durationMs?: number;
   /** ブラウザが自動再生を止めていて、利用者の操作が必要。 */
   blocked: boolean;
   /** 端末に日本語の声がなく、字幕だけになった文がある。 */
@@ -63,8 +70,8 @@ export interface SpeechQueueOptions {
   /** 録音中や再読み込みの直後など、鳴らし始めてはいけない間は true。 */
   isPaused(): boolean;
   onState(state: SpeechQueueState): void;
-  /** 本人の発言の再生の結果。自動案内（番号なし）は報告しない。 */
-  onReport(seq: number, status: PlaybackStatus, engine: SpeechEngine): void;
+  /** 本人の発言の再生の結果。自動案内（番号なし）は報告しない。durationMs は started のときだけ、分かれば渡す。 */
+  onReport(seq: number, status: PlaybackStatus, engine: SpeechEngine, durationMs?: number): void;
   /** 読み終えた、または読めないと分かった。再接続で二度読まないよう覚える。読み直しでは呼ばない。 */
   onSpoken(seq: number): void;
   /** サーバーへ音声を求める。 */
@@ -119,6 +126,8 @@ interface Playing {
   item: Item;
   engine: SpeechEngine;
   started: boolean;
+  startedAt?: number;
+  durationMs?: number;
   finished: boolean;
   handle: PlaybackHandle | null;
   watchdog: ReturnType<typeof setTimeout> | null;
@@ -273,10 +282,14 @@ export class SpeechPlaybackQueue {
     const playing: Playing = { item, engine, started: false, finished: false, handle: null, watchdog: null };
     this.current = playing;
     const events: PlaybackEvents = {
-      onStart: () => {
+      onStart: (durationMs) => {
         if (playing.finished || playing.started) return;
         playing.started = true;
-        if (item.seq !== undefined) this.options.onReport(item.seq, 'started', engine);
+        playing.startedAt = Date.now();
+        const duration =
+          durationMs !== undefined && Number.isFinite(durationMs) && durationMs > 0 ? Math.round(durationMs) : undefined;
+        playing.durationMs = duration;
+        if (item.seq !== undefined) this.options.onReport(item.seq, 'started', engine, duration);
         this.emit();
       },
       onEnd: () => this.finish(playing, 'ended'),
@@ -374,18 +387,22 @@ export class SpeechPlaybackQueue {
     const head = this.items[0];
     const waiting =
       !this.current && !this.blocked && head !== undefined && head.audio === undefined && !this.options.isPaused();
+    const current = this.current;
     const state: SpeechQueueState = {
-      seq: this.current ? (this.current.item.seq ?? null) : waiting ? (head.seq ?? null) : null,
-      phase: this.current ? 'playing' : waiting ? 'waiting' : 'idle',
+      seq: current ? (current.item.seq ?? null) : waiting ? (head.seq ?? null) : null,
+      phase: current ? 'playing' : waiting ? 'waiting' : 'idle',
       blocked: this.blocked,
       deviceVoiceMissing: this.deviceVoiceMissing,
+      ...(current?.started ? { startedAt: current.startedAt, durationMs: current.durationMs } : {}),
     };
     const last = this.lastState;
     if (
       last.seq === state.seq &&
       last.phase === state.phase &&
       last.blocked === state.blocked &&
-      last.deviceVoiceMissing === state.deviceVoiceMissing
+      last.deviceVoiceMissing === state.deviceVoiceMissing &&
+      last.startedAt === state.startedAt &&
+      last.durationMs === state.durationMs
     ) {
       return;
     }

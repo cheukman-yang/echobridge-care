@@ -206,6 +206,60 @@ describe('ふつうの高さと横向き', () => {
   });
 });
 
+describe('狭い画面で返答の方法を切り替えたとき', () => {
+  /** 切り替えで動いてはいけない部品の位置と高さ。 */
+  function frame() {
+    const box = (element: Element) => {
+      const rect = element.getBoundingClientRect();
+      return { top: Math.round(rect.top), height: Math.round(rect.height) };
+    };
+    return {
+      log: box(logRegion()),
+      tabs: box(screen.getByRole('tablist', { name: '返答の方法' })),
+      quick: box(quickBar()),
+    };
+  }
+
+  it('390×664で3つの方法を切り替えても、記録・切り替え・即答フレーズの位置と高さが変わらない', async () => {
+    await startCall(390, 664);
+    const before = frame();
+    for (const name of [/入力/, /登録文/, /返答候補/, /登録文/, /入力/]) {
+      await openTab(name);
+      expect(frame(), `${name}を開いたとき`).toEqual(before);
+    }
+    expectLogVisible(180);
+  });
+
+  it('登録文が多くても欄の中でスクロールし、別の方法から戻るとスクロールの位置が残る', async () => {
+    window.localStorage.setItem(
+      'echobridge.customPhrases.v1',
+      JSON.stringify(Array.from({ length: 12 }, (_, i) => ({ id: `p${i}`, text: `登録した文の例その${i + 1}です。` }))),
+    );
+    await startCall(390, 664);
+    const before = frame();
+    await openTab(/登録文/);
+    expect(frame()).toEqual(before);
+
+    const scroller = screen.getByRole('tabpanel', { name: /登録文/ }).parentElement as HTMLElement;
+    scroller.scrollTop = 240;
+    await settle();
+    await openTab(/入力/);
+    await openTab(/登録文/);
+    expect(scroller.scrollTop).toBe(240);
+    expect(window.scrollY).toBe(0);
+  });
+
+  it('入力中の文とフォーカスは、ほかの方法を開いて戻っても残る', async () => {
+    await startCall(390, 664);
+    await openTab(/入力/);
+    fireEvent.change(replyInput(), { target: { value: ORIGINAL } });
+    replyInput().focus();
+    await openTab(/返答候補/);
+    await openTab(/入力/);
+    expect(replyInput().value).toBe(ORIGINAL);
+  });
+});
+
 describe('画面の幅が変わったとき', () => {
   it('PCで編集中のAI案は、狭い画面に戻しても同じ欄のまま見え、フォーカスと選択範囲が残る', async () => {
     await startCall(900, 768);

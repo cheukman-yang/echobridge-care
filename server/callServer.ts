@@ -39,6 +39,15 @@ export type { RecognizeStream, SpeechRecognizer } from './callRoom';
 /** 制御メッセージは短く、音声は1回8KiB。それより大きいものは受け取らない。 */
 const MAX_WS_PAYLOAD_BYTES = 64 * 1024;
 
+/** 本人の画面に知らせる再生の長さの上限。1文300字を遅めに読んでも収まる長さ。 */
+const MAX_PLAYBACK_DURATION_MS = 5 * 60 * 1000;
+
+/**
+ * 相手の声を本人へ中継するときに、送りきれずに溜まってよい量（約2秒分）。
+ * 本人の回線が遅いと遅れが積み上がるので、超えた分は送らずに捨て、遅れを広げない。字幕はそのまま届く。
+ */
+const MAX_RELAY_BUFFERED_BYTES = 64 * 1024;
+
 const MessageEnvelopeSchema = z.looseObject({ type: z.string() });
 
 const StartCallSchema = z.object({
@@ -53,7 +62,11 @@ const SpeechPlaybackSchema = z.object({
   seq: z.number().int().positive(),
   status: z.enum(PLAYBACK_STATUSES),
   engine: z.enum(SPEECH_ENGINES).optional(),
+  // 再生する音声の長さ。本人の画面の目安にだけ使うので、範囲外なら捨てる。
+  durationMs: z.number().int().positive().max(MAX_PLAYBACK_DURATION_MS).optional().catch(undefined),
 });
+
+const PartnerAudioListenSchema = z.object({ enabled: z.boolean() });
 
 const TurnSeqSchema = z.object({ seq: z.number().int().positive() });
 
@@ -95,6 +108,8 @@ const MESSAGE_RULES: Record<
   speech_playback: { roles: ['hospital'], phases: ['connected', 'ending', 'ended'] },
   // 終了の直前に送られた文も、相手の端末で最後まで読めるようにする。
   speech_audio_request: { roles: ['hospital'], phases: ['connected', 'ending', 'ended'] },
+  // 相手の声を聞くかどうか。応答の前から選べるようにし、再接続のたびに送り直してもらう。
+  partner_audio_listen: { roles: ['patient'], phases: ALL_PHASES },
   speech_replay_request: { roles: ['patient'], phases: ['connected'] },
   patient_typing_notice: { roles: ['patient'], phases: ['connected'] },
   patient_polish_request: { roles: ['patient'], phases: ['connected'] },
@@ -265,6 +280,12 @@ export function attachCallServer(
       messagesInWindow: 0,
       unseatedSince: Date.now(),
       send: (message) => sendTo(ws, message),
+      sendAudio: (chunk) => {
+        if (ws.readyState !== WebSocket.OPEN) return false;
+        if (ws.bufferedAmount > MAX_RELAY_BUFFERED_BYTES) return false;
+        ws.send(chunk, { binary: true });
+        return true;
+      },
       release: (reason) => {
         connection.room = null;
         connection.role = null;
@@ -370,7 +391,16 @@ export function attachCallServer(
           break;
         case 'speech_playback': {
           const parsed = SpeechPlaybackSchema.safeParse(data);
-          if (parsed.success) room.reportPlayback(parsed.data.seq, parsed.data.status, parsed.data.engine);
+          if (parsed.success) {
+            room.reportPlayback(parsed.data.seq, parsed.data.status, parsed.data.engine, parsed.data.durationMs);
+          } else {
+            reject('invalid_message');
+          }
+          break;
+        }
+        case 'partner_audio_listen': {
+          const parsed = PartnerAudioListenSchema.safeParse(data);
+          if (parsed.success) room.setPartnerAudioListening(parsed.data.enabled);
           else reject('invalid_message');
           break;
         }

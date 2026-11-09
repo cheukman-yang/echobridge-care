@@ -26,13 +26,19 @@ type MessageOf<T extends MessageType> = Extract<ServerMessage, { type: T }>;
 /** 本物のWebSocketで通話サーバーへつなぐクライアント。受信を記録する。 */
 export class TestClient {
   readonly messages: ServerMessage[] = [];
+  /** 受け取ったバイナリのフレーム（本人の席へ中継された相手の声）。 */
+  readonly audio: Buffer[] = [];
   /** 閉じたときのクローズコード。 */
   readonly closed: Promise<number>;
   private listeners = new Set<() => void>();
 
   private constructor(private socket: WebSocket) {
-    socket.on('message', (raw) => {
-      this.messages.push(JSON.parse(raw.toString()) as ServerMessage);
+    socket.on('message', (raw, isBinary) => {
+      if (isBinary) {
+        this.audio.push(raw as Buffer);
+      } else {
+        this.messages.push(JSON.parse(raw.toString()) as ServerMessage);
+      }
       this.listeners.forEach((listener) => listener());
     });
     this.closed = new Promise((resolve) => socket.once('close', resolve));

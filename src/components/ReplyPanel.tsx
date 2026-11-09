@@ -1,5 +1,5 @@
 import type { KeyboardEvent } from 'react';
-import { CalendarDays, LoaderCircle, Send, Sparkles } from 'lucide-react';
+import { CalendarDays, LoaderCircle, Send, Sparkles, X } from 'lucide-react';
 import { buildCalendarDayUrl } from '@/lib/appointment';
 import type { AiMeta } from '@/lib/aiMeta';
 import { MAX_PATIENT_TEXT_LENGTH } from '@/lib/callProtocol';
@@ -171,7 +171,9 @@ export function ReplyComposer(props: ReplyComposerProps) {
         <Sparkles className="size-4 text-voice" aria-hidden />
         AIが案を作っています（まだ送信されません）
       </p>
-      <button type="button" onClick={props.onCancelPolish} className={buttonClass('quiet', 'md')}>
+      {/* 帯の上でもボタンと分かるよう、通常時から枠と白い面を付ける。 */}
+      <button type="button" onClick={props.onCancelPolish} className={buttonClass('secondary', 'md', 'shrink-0')}>
+        <X className="size-4" aria-hidden />
         やめる
       </button>
     </div>

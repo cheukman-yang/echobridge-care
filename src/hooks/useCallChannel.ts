@@ -57,6 +57,8 @@ export function useCallChannel(role: CallRole): CallChannel {
 
 interface CallSocketHandlers {
   onMessage(message: ServerMessage): void;
+  /** バイナリのフレーム。本人の画面では、中継された相手の声（PARTNER_AUDIO_SAMPLE_RATE_HZ のPCM）。 */
+  onAudio?(chunk: ArrayBuffer): void;
   /** 接続が切れた。席は残っているので、自動でつなぎ直す。 */
   onDisconnected?(): void;
   /** 同じ席に別の画面が入った。席は相手のものになったので、この画面からは戻らない。 */
@@ -96,6 +98,10 @@ export function useCallSocket(channel: CallChannel, handlers: CallSocketHandlers
     handlers.onMessage(message);
   });
 
+  const handleAudio = useEffectEvent((chunk: ArrayBuffer) => {
+    handlers.onAudio?.(chunk);
+  });
+
   const handleClose = useEffectEvent((code: number | undefined) => {
     setIsConnected(false);
     isSeatedRef.current = false;
@@ -132,6 +138,8 @@ export function useCallSocket(channel: CallChannel, handlers: CallSocketHandlers
 
     const connect = () => {
       const socket = new WebSocket(resolveCallSocketUrl(window.location));
+      // 中継された音声を ArrayBuffer で受け取る（既定の Blob だと読むたびに待ちが入る）。
+      socket.binaryType = 'arraybuffer';
       socketRef.current = socket;
 
       socket.onopen = () => {
@@ -150,6 +158,10 @@ export function useCallSocket(channel: CallChannel, handlers: CallSocketHandlers
 
       socket.onmessage = (event) => {
         if (disposed) return;
+        if (event.data instanceof ArrayBuffer) {
+          handleAudio(event.data);
+          return;
+        }
         let message: ServerMessage;
         try {
           message = JSON.parse(event.data) as ServerMessage;

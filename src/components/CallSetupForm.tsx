@@ -1,6 +1,7 @@
 import type { FormEvent } from 'react';
-import { Phone, Wand2 } from 'lucide-react';
-import { MAX_PATIENT_TEXT_LENGTH, SPEECH_VOICES, buildGreeting } from '@/lib/callProtocol';
+import Link from 'next/link';
+import { LogIn, Phone, Wand2 } from 'lucide-react';
+import { JOIN_PATH, MAX_PATIENT_TEXT_LENGTH, SPEECH_VOICES, buildGreeting } from '@/lib/callProtocol';
 import type { SpeechVoice } from '@/lib/callProtocol';
 import { CALL_PURPOSES, CALL_PURPOSE_PROFILES, MAX_PARTNER_NAME_LENGTH } from '@/lib/callPurpose';
 import type { CallPurpose } from '@/lib/callPurpose';
@@ -68,7 +69,7 @@ export function CallSetupForm({
           通話の準備
         </h1>
         <p className="max-w-prose text-[15px] leading-relaxed text-ink-2 text-pretty">
-          相手の話は文字で届き、あなたが選んだ文は合成音声で相手に読み上げられます。送る前に必ずあなたが確認します。
+          相手の話は文字で届き、あなたが選んだ文は合成音声で相手に読み上げられます。送る前に必ずあなたが確認します。相手の声は、通話中に「相手の声」をオンにすると聞けます。
         </p>
       </div>
 
@@ -142,19 +143,44 @@ export function CallSetupForm({
         </p>
       </div>
 
-      <div className="space-y-2">
-        <label htmlFor="call-intent" className="block text-[15px] font-bold">
-          最初に伝える用件
-        </label>
-        <textarea
-          id="call-intent"
-          value={intent}
-          rows={3}
-          maxLength={MAX_PATIENT_TEXT_LENGTH}
-          onChange={(event) => onIntentChange(event.target.value)}
-          placeholder={profile.intentPlaceholder}
-          className={cx(FIELD_CLASS, 'resize-none leading-relaxed')}
-        />
+      {/*
+        用件・読み上げる文・声を1つのまとまりにする。用件を打つと、すぐ下の文が同じ速さで変わり、
+        相手に読まれる文を見ながら直せる。声はその文の直後で選ぶ。
+      */}
+      <div className="space-y-3">
+        <div className="space-y-2">
+          <label htmlFor="call-intent" className="block text-[15px] font-bold">
+            最初に伝える用件
+          </label>
+          <textarea
+            id="call-intent"
+            value={intent}
+            rows={3}
+            maxLength={MAX_PATIENT_TEXT_LENGTH}
+            aria-describedby="greeting-preview-label"
+            onChange={(event) => onIntentChange(event.target.value)}
+            placeholder={profile.intentPlaceholder}
+            className={cx(FIELD_CLASS, 'resize-none leading-relaxed')}
+          />
+        </div>
+
+        <div className="rounded-xl border border-voice/30 bg-voice-soft px-4 py-3">
+          <p id="greeting-preview-label" className="text-[13px] font-bold text-voice-strong">
+            相手が応答すると、この文を読み上げます
+          </p>
+          {greeting ? (
+            <p
+              data-testid="greeting-preview"
+              className="mt-1 text-[17px] leading-(--leading-talk) text-ink text-pretty break-words"
+            >
+              {greeting}
+            </p>
+          ) : (
+            <p className="mt-1 text-[15px] leading-relaxed text-ink-2">
+              用件を入力すると、ここに読み上げる文が出ます。
+            </p>
+          )}
+        </div>
       </div>
 
       <fieldset className="space-y-2">
@@ -188,18 +214,6 @@ export function CallSetupForm({
         </p>
       </fieldset>
 
-      {greeting && (
-        <div className="space-y-2">
-          <p className="text-[13px] font-bold text-ink-2">相手が応答すると、この文を読み上げます</p>
-          <p
-            data-testid="greeting-preview"
-            className="rounded-xl bg-voice-soft px-4 py-3 text-[17px] leading-(--leading-talk) text-ink text-pretty"
-          >
-            {greeting}
-          </p>
-        </div>
-      )}
-
       {/* スマホでは用件の入力中も発信ボタンが見えるよう、フォームの下端に留める。フォームを過ぎると元の位置に戻る。 */}
       <div className="space-y-2 max-lg:sticky max-lg:bottom-0 max-lg:-mx-4 max-lg:border-t max-lg:border-line max-lg:bg-canvas/95 max-lg:px-4 max-lg:pt-3 max-lg:pb-[max(0.75rem,env(safe-area-inset-bottom))] max-lg:backdrop-blur-sm">
         <button
@@ -221,12 +235,33 @@ export function CallSetupForm({
   );
 }
 
+/**
+ * 招待を受け取った人の入口。トップページから参加の画面（招待コードの入力）へ進めるようにする。
+ * 招待リンクを開けば、これまでどおりコードを入れずに参加できる。
+ */
+export function JoinCallEntry() {
+  return (
+    <aside aria-labelledby="join-entry-heading" className="rounded-xl border border-line bg-surface p-5">
+      <h2 id="join-entry-heading" className="text-[15px] font-bold">
+        招待を受け取った方
+      </h2>
+      <p className="mt-2 text-[14px] leading-relaxed text-ink-2 text-pretty">
+        届いた招待リンクを開くと、そのまま参加できます。リンクを開けないときは、相手の画面に出ている招待コードを入力してください。
+      </p>
+      <Link href={JOIN_PATH} className={buttonClass('secondary', 'md', 'mt-3 w-full')}>
+        <LogIn className="size-4" aria-hidden />
+        招待コードで通話に参加する
+      </Link>
+    </aside>
+  );
+}
+
 /** 発信前の画面の横に置く、通話の流れの説明。手順は実際の順番どおり。 */
 export function CallFlowGuide() {
   const steps = [
     '発信すると、招待リンクとコードが表示されます。相手に送ってください。',
     '相手がリンクを開いて応答すると、用件のあいさつを読み上げます。',
-    '相手の話は文字で表示されます。返答候補・即答フレーズ・入力から返事を選びます。',
+    '相手の話は文字で表示されます（「相手の声」をオンにすると声も聞けます）。返答候補・即答フレーズ・入力から返事を選びます。',
     'あなたが確認した文だけが、相手に読み上げられます。',
   ];
   return (
