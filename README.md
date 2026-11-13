@@ -1,7 +1,8 @@
 # EchoBridge Care
 
-**End-to-End Medical Accessibility & Cross-Lingual Healthcare Communication App**  
-**発話・聴覚障がいのある方や外国人患者のための「病院検索・AI予約電話 〜 対面診察 〜 再診登録」一気通貫支援アプリ**
+[English](README.md) | [日本語](README.ja.md)
+
+**End-to-End Medical Accessibility & Bilingual Healthcare Dialogue Assistant**
 
 ![Next.js](https://img.shields.io/badge/Next.js-16.4.5-black?logo=next.js)
 ![React](https://img.shields.io/badge/React-19.3-149eca?logo=react)
@@ -11,135 +12,145 @@
 
 ---
 
-## 1. Overview / プロジェクト概要
+## 1. Overview
 
-### English
-**EchoBridge Care** empowers patients with speech or hearing difficulties (e.g., dysarthria, stuttering, laryngectomy, hard-of-hearing) as well as international patients facing language barriers to navigate healthcare independently—from **booking a clinic appointment by phone**, to **communicating face-to-face with a doctor in the exam room**, to **understanding prescriptions and scheduling follow-up visits**.
+**EchoBridge Care** is an end-to-end medical accessibility and bilingual communication web application designed for patients with speech or hearing difficulties (such as dysarthria, stuttering, laryngectomy, or hearing loss) as well as international patients navigating language barriers in clinical settings.
 
-Every screen supports instant **Japanese / English (`🇯🇵 日本語` / `🇺🇸 English`)** UI switching, interactive **visual guidance cues** (shimmer & micro-vibration on the next recommended action), and a **zero-config Local Demo Mode** so judges and reviewers can test the entire workflow on a single browser with no API keys required.
+Traditional assistive or translation tools only address isolated moments, leaving patients stranded during phone bookings or awkward across-the-desk consultations. EchoBridge Care connects the entire patient journey seamlessly on a single smartphone or PC browser:
 
-### 日本語サマリー
-**EchoBridge Care** は、構音障害・吃音・喉頭摘出・聴覚障がいなどで「声での電話や診察室でのやり取り」にハードルがある方や、日本語での受診が不安な外国人患者（および海外で英語受診する日本人旅行者）のために設計された医療アクセシビリティ＆多言語コミュニケーション支援Webアプリです。
+1. **Clinic Triage & AI Booking Phone Call (`/`)**: Organize symptoms, find suitable departments/clinics, and complete a booking call using synthesized voice, AI-generated 3-choice replies, and saved quick phrases.
+2. **Directions & Clinic Arrival**: Navigate to the clinic via consistent Google Maps Directions & Area Map links and carry saved booking details straight into the exam room.
+3. **Flat-Screen 180° Face-to-Face Consultation (`/consult`)**: Place the device flat on the examination desk with a 180°-rotated Doctor view on top and an upright Patient view on the bottom—featuring asymmetric microphone controls and real-time Japanese/English clinical translation.
+4. **Structured Clinical Summary & Follow-Up Scheduling**: Review structured bullet-point summaries of findings, prescriptions, and care instructions, and add evidence-based follow-up visits to Google Calendar in one tap.
 
-**「病院を探してAI音声で予約電話をかける（`/`）」➔「Google Mapsで病院へ向かう」➔「診察室の机にスマホを置いて180度反転画面で医師と対話する（`/consult`）」➔「診察内容の構造化サマリーを確認し、再診予定をGoogle Calendarへ登録する」** という受診体験のすべてを、サーバーに個人医療情報を残さないプライバシー重視設計で一気通貫に繋ぎます。
+Every screen supports instant **English / Japanese (`🇺🇸 English` / `🇯🇵 日本語`)** UI switching, interactive **visual action cues** (shimmer highlight and subtle micro-vibration on the next recommended button), and a **zero-configuration Local Demo Mode** that works out of the box without API keys.
 
 ---
 
-## 2. Key Features / 主な機能
+## 2. Key Features & Asymmetric UX Design
 
-### 🏥 1. 4-Step AI Mock Clinic Booking Call (`/` — Booking Wizard)
-- **Step 1 — Symptom & Preference Input**: Enter chief complaint, clinical department, preferred area, origin point for directions, and top-3 preferred time slots. Includes 1-tap **`[Fill Example / 例を入力]`** (auto-fills area & station origin so Maps works without GPS) and **`[✨ AI Polish / AIブラッシュアップ]`** to refine rough notes into polite clinical phrasing while keeping text freely editable.
-- **Step 2 — AI Triage & Clinic Selection**: Displays organized symptoms, recommended departments, and matching clinics—with a pinned **`[For Review/Testing] EchoBridge Care Mock Clinic`** at the top for safe, instant in-browser call testing (no real PSTN calls placed).
-- **Step 3 — Opening Message & Saved Phrases**: Auto-generates the opening greeting from Steps 1–2, lets users choose synthesized voice gender, and manages **`📌 Saved Phrases / 登録文`** (pre-seeded with 1 default accessibility phrase on first visit, with a prominent confirm button plus auto-save of uncommitted drafts when starting the call).
+### 🏥 4-Step AI Simulated Clinic Booking (`/` — Booking Wizard)
+- **Step 1 — Symptom, Area & Origin Input**:
+  - Enter chief complaints, preferred clinical department, target area, origin station/address for directions, and top-3 preferred appointment windows.
+  - Includes **`Fill Example`** (auto-populates symptoms, area `Around Shinjuku Station`, and origin `Shinjuku Station` so Maps directions work even without GPS) and **`✨ AI Polish`** (refines rough notes into clear, polite clinical phrasing directly inside the editable field).
+- **Step 2 — AI Department Triage & Mock Clinic Selection**:
+  - Summarizes symptoms, recommends relevant clinical departments, and pins **`[For Review/Testing] EchoBridge Care Mock Clinic`** at the top so judges can test the entire call safely inside the browser without placing real PSTN phone calls.
+- **Step 3 — Opening Message & Default-Preset Saved Phrases**:
+  - Auto-composes the opening phone greeting from Steps 1–2 and lets users select synthesized voice gender.
+  - Pre-loads **1 default accessibility phrase** (*"I use AI voice and text support to communicate. Please speak slowly and clearly."*) on initial access, features a prominent **`[✅ Confirm & Save Phrase to List]`** button, and automatically commits any unconfirmed draft when starting the call.
 - **Step 4 — Real-Time AI Receptionist Call & 2-Page Completion**:
-  - Live synthesized Japanese TTS conversation with English translation subtitles, a collapsible **AI 3-Choice Replies** drawer, a horizontally swipeable **Quick Phrases** bar separated from **`📌 Saved Phrases (N)`**, and a **2-row wide input bar** (`w-full` text input on top + `[🎤 Voice / ✨ AI Polish / 📤 Send]` below).
-  - **Completion Page 1 (Directions)**: Saves the booking locally and generates consistent **Google Maps Directions** & **Area Map** links anchored to real-world station/address coordinates.
-  - **Completion Page 2 (Calendar & Handoff)**: **Google Calendar** 1-tap registration, collapsible call transcript, and a seamless **`🩺 Open Face-to-Face Mode`** handoff button that carries booking details directly into `/consult`.
+  - Conducts a synthesized Japanese TTS call with English translation subtitles, a collapsible **AI 3-Choice Replies** drawer, a horizontally swipeable **Quick Phrases** rail (with right-edge fade & swipe cue) separated from **`📌 Saved Phrases (N)`**, and a **2-row wide input bar** (`w-full` text input on Row 1 + `[🎤 Voice | ✨ AI Polish | 📤 Send]` on Row 2).
+  - **Completion Page 1 (Clinic Directions)**: Saves the appointment locally and generates aligned **Google Maps Directions** and **Area Map** links using normalized real-world station/street landmarks.
+  - **Completion Page 2 (Calendar & Handoff)**: Provides 1-tap **Google Calendar** registration, a collapsible call transcript, and a **`🩺 Arrived at the Clinic: Open Face-to-Face Mode`** handoff button.
 
-### 🩺 2. Tabletop 180° Flipped Face-to-Face Consultation Mode (`/consult`)
-- **Compact 2-Step Pre-Consult Setup**:
-  - **Prep Step 1**: Choose conversation language pair (`🇯🇵 JA ⇄ JA`, `🌐 EN Patient ⇄ JA Doctor`, or `✈️ JA Patient ⇄ EN Doctor`) and optionally import a saved booking record.
-  - **Prep Step 2**: Review/polish symptom & allergy memo and confirm saved quick phrases before entering the exam room.
+### 🩺 Flat-Screen 180° Face-to-Face Consultation (`/consult`)
+- **Compact 2-Step Pre-Consultation Setup**:
+  - **Prep Step 1**: Select one of three clinical dialogue pairs (`🇯🇵 JA ⇄ JA`, `🌐 EN Patient ⇄ JA Doctor`, or `✈️ JA Patient ⇄ EN Doctor` for overseas travel) and import a saved booking record in one tap.
+  - **Prep Step 2**: Polish symptom/allergy notes (`✨ AI Polish`) and verify saved quick phrases before entering the exam room.
 - **Asymmetric Doctor / Patient Split-Screen UX**:
-  - **Doctor Side (Top, rotated `180°` for across-the-desk viewing)**: High-contrast display of the patient's confirmed message in the doctor's language, TTS replay, and a **Push-to-Talk (`Hold to Speak / 押している間だけ録音`)** mic button to prevent accidental ambient recording in clinical settings—paired with a **`🤖 Next Question (Demo)`** button so a single reviewer can advance realistic multi-turn doctor questions with one tap.
-  - **Patient Side (Bottom, upright)**: Scrollable **bilingual chat timeline** (doctor on left with original + translation, patient on right), collapsible **AI 3-Choice Replies** drawer, swipeable **Quick Phrases** + **`📌 Saved Phrases`** toggle, and a **2-row wide input bar** (`w-full` input + **toggle-style `🎤 Voice`** + editable **`✨ AI Polish`** + explicit **`📤 Show to Doctor`** confirmation).
+  - **Doctor Side (Top 1/3, rotated `180°` for across-the-desk readability)**:
+    - Displays the patient's confirmed message in large, high-contrast typography in the doctor's language with 1-tap TTS replay.
+    - Uses a **Push-to-Talk (`Hold to Speak`)** microphone button so ambient clinic noise or computer typing is never recorded accidentally, paired with a **`🤖 Next Question (Demo)`** button in the center bar for 1-device judge walkthroughs.
+  - **Patient Side (Bottom 2/3, upright)**:
+    - Features a wide **LINE/WhatsApp-style bilingual chat timeline** (doctor turns on the left with original + translated text; patient turns on the right) with auto-scroll.
+    - Combines a collapsible **AI 3-Choice Replies** drawer, swipeable **Quick Phrases** + **`📌 Saved Phrases`** toggle, and a **2-row wide input bar**: full-width text field on top, and **toggle-style `🎤 Voice`** + in-place editable **`✨ AI Polish`** + explicit **`📤 Show to Doctor`** confirmation below.
 
-### 📋 3. Structured Medical Summary & Evidence-Based Follow-Up Calendar
-- **Clinical Bullet-Point Summary**: Automatically distills the consultation into three structured sections—**(1) Chief Complaint**, **(2) Exam Findings & Allergies/History** (filtering out raw doctor questions), and **(3) Prescriptions, Care Instructions & Follow-Up Guidance**—in Japanese and English.
-- **Strict Follow-Up Date/Time Extraction**: Extracts follow-up timing strictly from spoken evidence (never fabricating a clock time—defaulting to an **All-Day Event** when no specific hour was mentioned, or pre-filling exact times when stated) and pre-populates both clinic name and editable clinic address into the **Google Calendar** URL.
-- **Home Hub History (`📋 Past Bookings & Consultations`)**: Displays compact counts and latest visit previews on the top hub (`/`), expanding to full history cards with 1-tap **Re-book** or **Resume in Face-to-Face Consult** handoffs.
+### 📋 Structured Clinical Summary & Evidence-Based Follow-Up Calendar
+- **Structured Medical Summary**: Distills the consultation into three clinical sections—**(1) Chief Complaint**, **(2) Exam Findings & Allergies/History** (filtering out raw doctor questions), and **(3) Prescriptions, Care Instructions & Next Visit**—displayed bilingually.
+- **Strict Evidence-Based Follow-Up Extraction**: Extracts follow-up dates and times strictly from spoken dialogue—never fabricating clock times (generating an **All-Day Event** when no specific hour was mentioned, or exact start/end times when stated) and embedding both the clinic name and editable street address into the **Google Calendar** `location` parameter.
+- **Home Hub History (`📋 Past Bookings & Consultations`)**: Displays compact booking/consultation counts and latest visit previews on `/`, expanding to full local history cards with 1-tap **Re-book** and **Face-to-Face Consult** handoffs.
 
-### 🔒 4. Privacy-First Local Storage & Zero-Key Local Demo Mode
-- **No Server-Side Medical Persistence**: Sensitive medical notes, call transcripts, saved phrases,予約履歴 (booking history), and 受診記録 (consultation summaries) are stored **strictly in browser `localStorage`**—never saved to an external database.
-- **Instant Local Demo Fallback**: All AI endpoints enforce a **4-second timeout** and automatically fall back to a deterministic clinical response engine when `GEMINI_API_KEY` / Vertex AI credentials are not configured. An explicit header badge (`Gemini Live AI` vs. `Local Demo Mode`) always indicates the active mode.
-- **Two-Browser Live Web Call (`/join`)**: Also retains browser-to-browser WebSocket live relay rooms (`/` legacy call room & `/join`) for live two-device human testing.
+### 🔒 Privacy-First Local Storage & Zero-Config Local Demo Mode
+- **Browser-Only Medical Persistence**: Sensitive symptom memos, call transcripts, saved quick phrases, booking records, and consultation summaries are stored **exclusively in browser `localStorage`**—never persisted to an external database.
+- **4-Second Timeout & Instant Local Demo Fallback**: Every AI endpoint enforces a strict **4-second timeout** and automatically switches to a deterministic clinical response engine when Gemini credentials are absent or unreachable. Header badges (`Gemini Live AI` vs. `Local Demo Mode`) transparently indicate the active engine at all times.
+- **Two-Browser Live Web Call (`/join`)**: Also preserves browser-to-browser WebSocket live relay rooms (`/join`) for real-time two-device human communication.
 
 ---
 
-## 3. Quick Start & 2-Minute Judge Walkthrough / クイックスタート＆審査員向けデモ手順
+## 3. Quick Start & 2-Minute Judge Walkthrough
 
-### Quick Start (No `.env` or API Keys Required!)
+### Quick Start (No `.env` or API Keys Required)
 
 ```bash
 # 1. Install dependencies
 npm install
 
-# 2. Start the development server (runs immediately in Local Demo Mode if no API key is set)
+# 2. Launch the development server (runs immediately in Local Demo Mode if no API key is configured)
 npm run dev
 ```
 
 Open **`http://localhost:3000`** in Chrome, Edge, or Safari.  
-*(No `.env.local` file, database setup, or login is required to test every feature end-to-end.)*
+*(No `.env.local` file, cloud credentials, database, or login is required to evaluate every workflow end-to-end.)*
 
 ---
 
-### ⏱️ 2-Minute End-to-End Judge Walkthrough / 最短2分通しデモ手順
+### ⏱️ 2-Minute End-to-End Judge Walkthrough
 
-Follow the **glowing teal buttons (shimmer + subtle micro-vibration)** at each step—they highlight the exact primary action to tap next:
+Follow the **glowing teal action buttons (shimmer + subtle micro-vibration)** on each screen—they guide you through the primary path in under 2 minutes on a single device:
 
-#### Part A: AI Phone Booking & Directions (`/` — ~60 sec)
-1. **Top Hub (`/`)**: Toggle `🇺🇸 English` or `🇯🇵 日本語` at the top if desired, then tap **`🏥 Find a Clinic & Book by AI Phone / 病院を探す・AIで予約電話する`**.
-2. **Step 1/4 (Symptoms & Area)**: Tap **`[Fill Example / 例を入力]`** to auto-fill symptoms, department, area (`Around Shinjuku Station / 新宿駅周辺`), and origin (`Shinjuku Station / 新宿駅`). *(Optional: edit text and tap **`✨ AI Polish`** to see clinical phrasing refinement.)* Tap **`Next: Search Clinics`**.
-3. **Step 2/4 (Clinic Candidates)**: Tap **`Select This Mock Clinic & Prepare Call`** on the pinned top sandbox clinic card.
-4. **Step 3/4 (Pre-Call Check)**: Review the auto-generated opening message (note that 1 default accessibility phrase is already pre-loaded in Saved Phrases) and tap **`Start AI Booking Call`**.
-5. **Step 4/4 (Live AI Call)**:
-   - Listen to / read the AI receptionist's reply.
-   - Tap **`💡 Open AI 3-Choice Replies ▲`** to send a 1-tap contextual answer, or try **`📌 Saved Phrases (1)`**, the swipeable **Quick Phrases** rail, or the **2-row wide input bar** (`🎤 Voice` / `✨ AI Polish` / `📤 Send`).
+#### Part 1: AI Clinic Booking Call & Directions (`/` — ~60 seconds)
+1. **Home Hub (`/`)**: Choose **`🇺🇸 English`** (or `🇯🇵 日本語`) in the top bar, then tap **`🏥 Find a Clinic & Book by AI Phone`**.
+2. **Step 1/4**: Tap **`Fill Example`** to populate symptoms, department, preferred area (`Around Shinjuku Station`), and origin (`Shinjuku Station`). *(Optional: tap **`✨ AI Polish`** to test editable clinical phrasing refinement.)* Tap **`Next: Search Clinics`**.
+3. **Step 2/4**: On the pinned top card (`[For Review/Testing] EchoBridge Care Mock Clinic`), tap **`Select This Mock Clinic & Prepare Call`**.
+4. **Step 3/4**: Confirm the auto-generated opening message (note the pre-seeded default phrase in *Saved Quick Phrases*) and tap **`Start AI Booking Call`**.
+5. **Step 4/4 (In-Browser AI Call)**:
+   - Read/listen to the AI receptionist's greeting and proposed appointment time.
+   - Tap **`💡 Open AI 3-Choice Replies ▲`** to send a 1-tap reply, or test **`📌 Saved Phrases (1)`**, the swipeable **Quick Phrases** rail, or the **2-row wide input bar** (`🎤 Voice` / `✨ AI Polish` / `📤 Send`).
    - Tap **`End Call & View Appointment / Directions`** (or `End Call & Review` in the header).
 6. **Completion Pages 1 ➔ 2**:
-   - **Page 1**: Verify **`Open Directions in Google Maps`** (origin pre-set to `Shinjuku Station`) and **`View Area Map`**, then tap **`[Next: Proceed to Google Calendar Registration →]`**.
-   - **Page 2**: Check the **Google Calendar** preview and collapsible call transcript, then tap **`🩺 Arrived at the Clinic: Open Face-to-Face Mode (Carry Over Booking Info)`**.
+   - **Page 1**: Check **`Open Directions in Google Maps`** (origin set to `Shinjuku Station`) and **`View Area Map`**, then tap **`[Next: Proceed to Google Calendar Registration →]`**.
+   - **Page 2**: Inspect the **Google Calendar** preview and collapsible call transcript, then tap **`🩺 Arrived at the Clinic: Open Face-to-Face Mode (Carry Over Booking Info)`**.
 
-#### Part B: 180° Face-to-Face Consultation & Follow-Up (`/consult` — ~60 sec)
-1. **Prep Step 1/2**: Confirm your saved booking is selected and choose a language pair (e.g., `🇯🇵 JA ⇄ JA` or `🌐 EN ⇄ JA`), then tap **`Next: Check Symptom Memo`**.
-2. **Prep Step 2/2**: Confirm the carried-over symptom memo & preset saved phrase, then tap **`🩺 Start Face-to-Face Consultation`**.
-3. **Active Consultation (180° Split View)**:
-   - Observe the **top 180°-rotated Doctor panel** and **bottom Patient chat timeline** (the doctor's opening question appears automatically).
-   - Tap **`💡 Open AI 3-Choice Replies ▲`** (or type in the wide input -> **`✨ AI Polish`** -> **`📤 Show to Doctor`**) and watch the top 180° Doctor card update immediately.
-   - Tap **`🤖 Next Question (Demo) / 次の質問(デモ用)`** in the center bar 1–2 times to simulate the doctor's physical exam findings, prescription, and 2-week follow-up instruction.
-   - Tap **`✅ End & Summary / 診察終了・要約へ`**.
-4. **Consultation Summary & Follow-Up**:
+#### Part 2: 180° Face-to-Face Consultation & Follow-Up (`/consult` — ~60 seconds)
+1. **Prep Step 1/2**: Verify your saved booking is selected and choose a dialogue language pair (e.g., `🌐 EN Patient ⇄ JA Doctor`), then tap **`Next: Check Symptom Memo`**.
+2. **Prep Step 2/2**: Confirm the carried-over symptom memo and saved quick phrase, then tap **`🩺 Start Face-to-Face Consultation`**.
+3. **Active Consultation (180° Split Screen)**:
+   - Observe the **top 180°-rotated Doctor panel** (with Push-to-Talk `Hold to Speak`) and the **bottom Patient chat timeline**.
+   - Send a reply via **`💡 Open AI 3-Choice Replies ▲`** or type in the wide input field -> tap **`✨ AI Polish`** -> edit if desired -> tap **`📤 Show to Doctor`**, watching the rotated Doctor card update immediately.
+   - Tap **`🤖 Next Question (Demo)`** in the center bar 1–2 times to advance through physical exam findings, prescriptions, and a 2-week follow-up instruction.
+   - Tap **`✅ End & Summary`**.
+4. **Structured Summary & Follow-Up**:
    - Review the structured **Chief Complaint**, **Findings & Allergies**, and **Prescriptions & Care Instructions**.
-   - Confirm the auto-extracted **2-week follow-up date, time, and clinic address**, and tap **`Add Follow-Up to Google Calendar`**.
-   - Tap **`Back to Home Hub / トップへ戻る`**—notice **`📋 Past Bookings & Consultations`** at the bottom of the Home Hub now stores both your booking and consultation records locally!
+   - Verify the extracted **2-week follow-up date, time, and clinic address**, and tap **`Add Follow-Up to Google Calendar`**.
+   - Tap **`Back to Home Hub`**—the **`📋 Past Bookings & Consultations`** section at the bottom of the Home Hub now displays your locally saved booking and consultation records with 1-tap handoff buttons.
 
 ---
 
-## 4. Tech Stack & Verification / 技術スタック＆品質保証
+## 4. Tech Stack & Verification
 
 ### Tech Stack
 | Layer | Technologies |
 |---|---|
 | **Framework & UI** | **Next.js 16.4.5** (App Router, Turbopack), **React 19.3**, **TypeScript 5**, **Tailwind CSS 4**, `lucide-react` |
-| **AI & Clinical Logic** | **`@google/genai`** (Gemini 2.5 Flash / Gemini 3.5 Flash Lite via API Key or Vertex AI ADC), `zod` structured schema validation, 4s timeout + deterministic local clinical fallback (`server/careAiService.ts`) |
+| **AI & Clinical Logic** | **`@google/genai`** (Gemini 2.5 Flash / Gemini 3.5 Flash Lite via API Key or Vertex AI ADC), `zod` schema validation, 4s timeout + deterministic clinical fallback (`server/careAiService.ts`) |
 | **Speech (STT / TTS)** | Browser **Web Speech API** (`SpeechRecognition` & `speechSynthesis`) + optional **`@google-cloud/text-to-speech`** (Chirp 3 HD) & **`@google-cloud/speech`** |
-| **External Integrations** | **Google Maps URLs** (Directions & Search with landmark normalization), **Google Calendar Event URLs** (timed & all-day events with clinic address) — zero OAuth/API key friction |
-| **Persistence** | Privacy-first browser **`localStorage`** (`useSyncExternalStore` reactive stores for bookings, consultations, language, and custom phrases) |
+| **Maps & Calendar** | **Google Maps URLs** (Directions & Search with landmark normalization), **Google Calendar Event URLs** (timed & all-day events with clinic address) — zero OAuth friction |
+| **Local Persistence** | Browser **`localStorage`** with `useSyncExternalStore` reactive stores (bookings, consultations, language preference, and saved quick phrases) |
 
-### Quality Assurance & Automated Verification
-All **27 test suites (745 tests)**, TypeScript strict checks, ESLint rules, and Next.js production builds pass with **0 errors**:
+### Automated Verification (Zero Errors)
+All **27 test suites (745 tests)**, strict TypeScript checks, ESLint rules, and production Next.js builds pass with **0 errors**:
 
 ```bash
 # Run all 27 test files (745 unit, API, protocol & end-to-end UI integration tests)
 npm test
 
-# TypeScript strict type check (0 errors)
+# Strict TypeScript check (0 errors)
 npx tsc --noEmit
 
 # ESLint check (0 errors)
 npm run lint
 
-# Production build verification (Next.js 16.4.5)
+# Next.js 16.4.5 production build (0 errors)
 npm run build
 ```
 
 ---
 
-## 5. Optional Live AI Configuration & Deployment / 実AI連携・デプロイ設定（任意）
+## 5. Optional Live AI Configuration & Deployment
 
-EchoBridge Care works out of the box without environment variables. To enable **Gemini Live AI** responses and/or **Google Cloud Text-to-Speech**, create a `.env.local` (or `.env`) file in the project root:
+EchoBridge Care works immediately without environment variables. To connect live **Gemini API** models and/or **Google Cloud Text-to-Speech**, create a `.env.local` (or `.env`) file in the project root:
 
-### Option A: Gemini Developer API Key (Simplest)
+### Option A: Gemini Developer API Key
 ```ini
 GEMINI_API_KEY=your_gemini_api_key_here
 ```
@@ -153,8 +164,7 @@ gcloud auth application-default set-quota-project <YOUR_GCP_PROJECT_ID>
 GOOGLE_GENAI_USE_VERTEXAI=true
 GOOGLE_CLOUD_PROJECT=your_gcp_project_id
 GOOGLE_CLOUD_LOCATION=global
-# Optional: disable Cloud TTS to always use browser speechSynthesis
-# TTS_ENABLED=false
+# Optional: set TTS_ENABLED=false to always use browser speechSynthesis
 ```
 
 ### Production / Cloud Run Start
@@ -165,31 +175,31 @@ NODE_ENV=production npm start
 
 ---
 
-## 6. Project Structure / ディレクトリ構成
+## 6. Project Structure
 
 ```text
 echobridge-care/
 ├── src/
 │   ├── app/
-│   │   ├── page.tsx                 # Top Hub + 4-Step AI Clinic Booking Wizard + Local History
-│   │   ├── consult/page.tsx         # 2-Step Prep + 180° Tabletop Consultation + Structured Summary
-│   │   ├── join/page.tsx            # Partner browser WebSocket room (/join)
-│   │   └── api/                     # Next.js Route Handlers (clinic-search, sandbox-reception, consult, polish-draft, tts)
+│   │   ├── page.tsx                  # Home Hub + 4-Step AI Clinic Booking Wizard + Local History
+│   │   ├── consult/page.tsx          # 2-Step Prep + 180° Tabletop Consultation + Structured Summary
+│   │   ├── join/page.tsx             # Partner browser WebSocket live call room (/join)
+│   │   └── api/                      # Route Handlers (clinic-search, sandbox-reception, consult, polish-draft, tts)
 │   ├── components/
-│   │   ├── SandboxCallView.tsx      # Step 4 AI Receptionist Call + 2-Page Maps/Calendar Completion
-│   │   ├── CustomPhrases.tsx        # Saved Quick Phrases manager (with default 1-phrase preset)
-│   │   ├── QuickPhraseRail.tsx      # Horizontally swipeable quick phrase rail with scroll hint
-│   │   └── AppointmentReviewCard.tsx# Editable Google Calendar & Maps preview card
-│   └── lib/                         # Care types, localStorage stores, Maps/Calendar URL builders, speech & draft polish
+│   │   ├── SandboxCallView.tsx       # Step 4 AI Receptionist Call + 2-Page Maps/Calendar Completion
+│   │   ├── CustomPhrases.tsx         # Saved Quick Phrases manager (with default 1-phrase preset)
+│   │   ├── QuickPhraseRail.tsx       # Horizontally swipeable quick phrase rail with scroll cues
+│   │   └── AppointmentReviewCard.tsx # Editable Google Calendar & Maps preview card
+│   └── lib/                          # Care types, localStorage stores, Maps/Calendar URLs, speech & draft polish
 ├── server/
-│   ├── careAiService.ts             # Gemini structured medical prompts + 4s timeout + deterministic local fallback
-│   └── index.ts                     # Unified HTTP + WebSocket production server (Cloud Run compatible)
-└── tests/                           # 27 test suites / 745 tests (Vitest + Testing Library)
+│   ├── careAiService.ts              # Gemini clinical prompts + 4s timeout + deterministic local fallback
+│   └── index.ts                      # Unified HTTP + WebSocket production server (Cloud Run ready)
+└── tests/                            # 27 test files / 745 passing tests (Vitest + Testing Library)
 ```
 
 ---
 
-## License / ライセンス
+## License
 
 Released under the [MIT License](LICENSE).  
-*Disclaimer: EchoBridge Care is a communication and accessibility support tool and does not provide medical diagnosis. Please do not enter real personal health information when testing in shared demo environments.*
+*Disclaimer: EchoBridge Care is an accessibility and medical communication support tool and does not provide medical diagnosis. Please do not enter real personal health information when testing on shared devices.*
