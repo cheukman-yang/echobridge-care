@@ -22,6 +22,7 @@ import {
   MAX_PARTNER_NAME_LENGTH,
   normalizePartnerName,
 } from '../src/lib/callPurpose';
+import { DEFAULT_USER_LANGUAGE, USER_LANGUAGES } from '../src/lib/userLanguage';
 import type {
   CallErrorCode,
   CallPhase,
@@ -57,6 +58,7 @@ const StartCallSchema = z.object({
   // 長すぎる名前は切り詰めず断る。画面の入力欄にも同じ上限がある。
   partnerName: z.string().max(MAX_PARTNER_NAME_LENGTH).transform(normalizePartnerName).default(''),
   voice: z.enum(SPEECH_VOICES).default(DEFAULT_SPEECH_VOICE),
+  userLanguage: z.enum(USER_LANGUAGES).default(DEFAULT_USER_LANGUAGE),
 });
 
 const SpeechPlaybackSchema = z.object({
@@ -327,8 +329,8 @@ export function attachCallServer(
         reject('invalid_message');
         return;
       }
-      const { intent, purpose, partnerName, voice } = parsed.data;
-      const room = calls.create(intent, { purpose, partnerName, voice });
+      const { intent, purpose, partnerName, voice, userLanguage } = parsed.data;
+      const room = calls.create(intent, { purpose, partnerName, voice, userLanguage });
       if (!room) {
         logEvent('WARNING', 'call_capacity_reached', { activeCalls: calls.activeCalls });
         reject('server_busy');

@@ -56,6 +56,8 @@ export function useCallChannel(role: CallRole): CallChannel {
 }
 
 interface CallSocketHandlers {
+  /** false のときは WebSocket 接続を開始しない（スタンドアロン画面での不要な接続エラーを防ぐ）。 */
+  enabled?: boolean;
   onMessage(message: ServerMessage): void;
   /** バイナリのフレーム。本人の画面では、中継された相手の声（PARTNER_AUDIO_SAMPLE_RATE_HZ のPCM）。 */
   onAudio?(chunk: ArrayBuffer): void;
@@ -72,9 +74,11 @@ const defaultJoin = (seatToken: string | null): ClientMessage | null =>
 
 /**
  * 通話サーバーへの接続を保つ。接続中かどうかを返す。
- * 切れたらつなぎ直し、席のトークンがあれば同じ通話へ戻る。
+ * - enabled === false のときは一切接続しない。
+ * - 初回接続（または再接続）で一度も OPEN にならずに閉じた場合は、無限リトライせず静かに終了する。
  */
 export function useCallSocket(channel: CallChannel, handlers: CallSocketHandlers): boolean {
+  const enabled = handlers.enabled ?? true;
   const [isConnected, setIsConnected] = useState(false);
   const { role, socketRef, seatTokenRef, isSeatedRef } = channel;
 
@@ -113,6 +117,10 @@ export function useCallSocket(channel: CallChannel, handlers: CallSocketHandlers
   });
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
     let disposed = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     seatTokenRef.current = loadSeatToken(role);
@@ -137,20 +145,34 @@ export function useCallSocket(channel: CallChannel, handlers: CallSocketHandlers
     };
 
     const connect = () => {
-      const socket = new WebSocket(resolveCallSocketUrl(window.location));
+      let openedOnThisAttempt = false;
+      let socket: WebSocket;
+      try {
+        socket = new WebSocket(resolveCallSocketUrl(window.location));
+      } catch {
+        return;
+      }
       // 中継された音声を ArrayBuffer で受け取る（既定の Blob だと読むたびに待ちが入る）。
       socket.binaryType = 'arraybuffer';
       socketRef.current = socket;
 
       socket.onopen = () => {
+        openedOnThisAttempt = true;
         if (!disposed) handleOpen(socket);
       };
 
       socket.onclose = (event) => {
         if (disposed) return;
         handleClose(event?.code);
+        if (event?.code === CLOSE_CODE_SEAT_TAKEN) {
+          return;
+        }
         if (event?.code === CLOSE_CODE_IDLE) {
           waitForActivity();
+          return;
+        }
+        // 一度も接続確立できなかった場合（ws://localhost:8080 未起動など）は無限リトライせず静かに終了する
+        if (!openedOnThisAttempt) {
           return;
         }
         retryTimer = setTimeout(connect, RECONNECT_DELAY_MS);
@@ -180,7 +202,7 @@ export function useCallSocket(channel: CallChannel, handlers: CallSocketHandlers
       if (retryTimer) clearTimeout(retryTimer);
       socketRef.current?.close();
     };
-  }, [role, socketRef, seatTokenRef]);
+  }, [enabled, role, socketRef, seatTokenRef]);
 
-  return isConnected;
+  return enabled && isConnected;
 }

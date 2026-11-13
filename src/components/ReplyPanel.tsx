@@ -29,10 +29,12 @@ function SuggestionSkeleton() {
 export function LatestPartnerUtterance({
   partnerLabel,
   text,
+  translation,
   isPartnerSpeaking,
 }: {
   partnerLabel: string;
   text: string | null;
+  translation?: string | null;
   isPartnerSpeaking: boolean;
 }) {
   if (!text && !isPartnerSpeaking) return null;
@@ -44,6 +46,11 @@ export function LatestPartnerUtterance({
           <blockquote className="mt-1.5 border-l-4 border-line-strong pl-3.5 text-[20px] leading-(--leading-talk) text-ink text-pretty break-words">
             {text}
           </blockquote>
+          {translation && (
+            <p className="mt-2 rounded-lg bg-voice-soft px-3 py-2 text-[14px] font-bold text-voice-strong">
+              🇺🇸 {translation}
+            </p>
+          )}
         </figure>
       )}
       {isPartnerSpeaking && (
@@ -95,24 +102,33 @@ export function SuggestionsSection({
         <>
           <SuggestionSourceNote ai={suggestionsAi} />
           <div className="grid gap-2">
-            {suggestions.map((suggestion, index) => (
-              <button
-                key={`${index}-${suggestion.text}`}
-                type="button"
-                onClick={() => onSend(suggestion.text)}
-                disabled={!canSend}
-                className="flex w-full flex-col items-start gap-1 rounded-lg border border-line-strong bg-surface px-4 py-3 text-left transition-colors duration-150 hover:border-voice hover:bg-voice-soft disabled:cursor-not-allowed disabled:border-line disabled:bg-subtle disabled:text-ink-2 disabled:hover:bg-subtle"
-              >
-                <span className="text-[16px] leading-snug text-pretty">{suggestion.text}</span>
-                {suggestion.tag && <span className="text-[12px] text-ink-2">{suggestion.tag}</span>}
-              </button>
-            ))}
+            {suggestions.map((suggestion, index) => {
+              const primaryLabel = suggestion.displayText ?? suggestion.text;
+              const hasJapaneseSub = Boolean(
+                suggestion.displayText && suggestion.displayText !== suggestion.text,
+              );
+              return (
+                <button
+                  key={`${index}-${suggestion.text}`}
+                  type="button"
+                  onClick={() => onSend(suggestion.text)}
+                  disabled={!canSend}
+                  className="flex w-full flex-col items-start gap-1 rounded-lg border border-line-strong bg-surface px-4 py-3 text-left transition-colors duration-150 hover:border-voice hover:bg-voice-soft disabled:cursor-not-allowed disabled:border-line disabled:bg-subtle disabled:text-ink-2 disabled:hover:bg-subtle"
+                >
+                  <span className="text-[16px] leading-snug text-pretty">{primaryLabel}</span>
+                  {hasJapaneseSub && (
+                    <span className="text-[12px] text-ink-2">🇯🇵 読み上げ: {suggestion.text}</span>
+                  )}
+                  {suggestion.tag && <span className="text-[12px] text-ink-2">{suggestion.tag}</span>}
+                </button>
+              );
+            })}
           </div>
         </>
       ) : (
         <p className="text-[14px] leading-relaxed text-ink-2">相手が話し終えると、ここに3つの候補が出ます。</p>
       )}
-      {/* 日時を提案されたときに、自分の予定を確かめられるようにする。EchoBridgeは予定を読まない。 */}
+      {/* 日時を提案されたときに、自分の予定を確かめられるようにする。EchoBridge Careは予定を読まない。 */}
       <a
         href={buildCalendarDayUrl(null)}
         target="_blank"

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import PatientApp from '@/app/page';
+import PatientApp from '@/components/LegacyPatientCallApp';
 import type { ServerMessage } from '@/lib/callProtocol';
 import { PARTNER_VOICE_KEY } from '@/lib/partnerVoice';
 import { callJoined } from '../helpers/callMessages';
@@ -152,13 +152,14 @@ describe('読み上げ中の表示', () => {
 });
 
 describe('トップページ', () => {
-  it('招待を受け取った人のための、参加の画面への入口がある', () => {
+  it('招待参加UIをトップ画面から非表示にし、対面診察モードへの導線に集中している', () => {
     render(<PatientApp />);
     act(() => socket().open());
-    const links = screen.getAllByRole('link').filter((link) => link.getAttribute('href') === '/join');
-    expect(links.length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByRole('link', { name: '招待コードで通話に参加する' })).toBeTruthy();
-    expect(screen.getByRole('link', { name: '通話に参加' })).toBeTruthy();
+    const joinLinks = screen.queryAllByRole('link').filter((link) => link.getAttribute('href') === '/join');
+    expect(joinLinks).toHaveLength(0);
+    expect(screen.queryByText('招待を受け取った方')).toBeNull();
+    const consultLinks = screen.getAllByRole('link').filter((link) => link.getAttribute('href') === '/consult');
+    expect(consultLinks.length).toBeGreaterThanOrEqual(2);
   });
 
   it('読み上げる文を用件の入力欄のすぐ後に出し、声の選択はその後に置く', () => {

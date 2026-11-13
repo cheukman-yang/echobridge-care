@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import PatientApp from '@/app/page';
+import PatientApp from '@/components/LegacyPatientCallApp';
 import { WIDE_LAYOUT_QUERY } from '@/components/CallWorkspace';
 import type { AiMeta } from '@/lib/aiMeta';
 import type { ServerMessage } from '@/lib/callProtocol';

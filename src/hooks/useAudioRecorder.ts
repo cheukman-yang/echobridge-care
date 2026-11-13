@@ -77,7 +77,9 @@ export function useAudioRecorder(input: AudioRecorderInput) {
       mediaStreamRef.current = stream;
 
       // 引数なしで作成し、OSネイティブのサンプリングレート（48kHz等）で確実にキャプチャ
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const AudioCtx =
+        window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      const audioContext = new AudioCtx();
       audioContextRef.current = audioContext;
 
       if (audioContext.state === 'suspended') {

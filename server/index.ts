@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import http from 'node:http';
 import next from 'next';
 import speech from '@google-cloud/speech';
@@ -11,6 +11,8 @@ import { createAiAssistant } from './geminiService';
 import { createSpeechRecognizer, limitConcurrentStreams } from './speechRecognizer';
 import { DISABLED_SYNTHESIZER, createCloudSynthesizer, resolveSynthesizerConfig } from './speechSynthesizer';
 import type { SpeechSynthesizer, TtsClientLike } from './speechSynthesizer';
+
+dotenv.config({ path: ['.env.local', '.env'] });
 
 /**
  * 本番（NODE_ENV=production）では、画面（Next.js）と通話のWebSocketを同じポートで配る。
@@ -77,7 +79,7 @@ async function main(): Promise<void> {
 
   server.listen(PORT, () => {
     const scope = isProduction ? 'app and calls' : 'calls only';
-    console.log(`> EchoBridge server (${scope}) on port ${PORT}, call socket at /ws/call`);
+    console.log(`> EchoBridge Care server (${scope}) on port ${PORT}, call socket at /ws/call`);
   });
 
   process.once('SIGTERM', () => {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import PatientApp from '@/app/page';
+import PatientApp from '@/components/LegacyPatientCallApp';
 import type { AiMeta } from '@/lib/aiMeta';
 import { CLOSE_CODE_IDLE, MAX_REPLAYS_PER_TURN, buildGreeting } from '@/lib/callProtocol';
 import type { AppointmentDraft, ServerMessage } from '@/lib/callProtocol';
@@ -1072,39 +1072,42 @@ describe('再接続', () => {
 describe('通話の目的と相手の名前', () => {
   const intentField = () => screen.getByLabelText('最初に伝える用件');
 
-  it('選んだ目的と相手の名前を発信に含め、あいさつのプレビューも目的に合わせる', () => {
+  it('医療機関への連絡に一本化され、相手の名前と用件を発信に含める', () => {
     render(<PatientApp />);
     act(() => socket().open());
 
-    fireEvent.click(screen.getByRole('radio', { name: /日常の連絡/ }));
-    fireEvent.change(screen.getByLabelText(/相手の名前/), { target: { value: '佐藤さん' } });
-    fireEvent.change(intentField(), { target: { value: '土曜の待ち合わせ' } });
+    expect(screen.queryByRole('radio', { name: /日常の連絡/ })).toBeNull();
+    fireEvent.change(screen.getByLabelText(/相手の名前/), { target: { value: 'ひまわり医院' } });
+    fireEvent.change(intentField(), { target: { value: '内科の初診予約をしたいです' } });
 
     expect(screen.getByTestId('greeting-preview').textContent).toBe(
-      buildGreeting('土曜の待ち合わせ', 'general'),
+      buildGreeting('内科の初診予約をしたいです', 'medical'),
     );
 
     fireEvent.click(screen.getByRole('button', { name: /発信する/ }));
 
     expect(socket().sentOfType('start_call')).toEqual([
-      { type: 'start_call', intent: '土曜の待ち合わせ', purpose: 'general', partnerName: '佐藤さん', voice: 'female' },
+      {
+        type: 'start_call',
+        intent: '内科の初診予約をしたいです',
+        purpose: 'medical',
+        partnerName: 'ひまわり医院',
+        voice: 'female',
+      },
     ]);
   });
 
-  it('「例を入力」は空の欄にだけ、目的に合った架空の例を入れる', () => {
+  it('フォームの「例を入力」で模擬クリニック名と初診予約用件が確実に反映される', () => {
     render(<PatientApp />);
     act(() => socket().open());
     const partnerField = screen.getByLabelText(/相手の名前/) as HTMLInputElement;
     expect(partnerField.value).toBe('');
     expect((intentField() as HTMLTextAreaElement).value).toBe('');
 
-    fireEvent.click(screen.getByRole('radio', { name: /日常の連絡/ }));
-    fireEvent.change(partnerField, { target: { value: '佐藤さん' } });
-    fireEvent.click(screen.getByRole('button', { name: '例を入力' }));
+    fireEvent.click(screen.getByTestId('setup-fill-example-button'));
 
-    expect(partnerField.value).toBe('佐藤さん');
-    expect((intentField() as HTMLTextAreaElement).value).toBe('土曜日の待ち合わせ時間を決めたいです');
-    expect(screen.getByRole('button', { name: '例を入力' })).toHaveProperty('disabled', true);
+    expect(partnerField.value).toBe('[審査・検証用] EchoBridge Care 模擬クリニック');
+    expect((intentField() as HTMLTextAreaElement).value).toContain('初診予約');
   });
 
   it('用件が空のあいだは、発信できない理由を出す', () => {
@@ -1615,7 +1618,7 @@ describe('登録した文（カスタム返答）', () => {
     expect(socket().sentOfType('patient_confirmed_speech')).toEqual([]);
   });
 
-  it('入力欄が空なら例文を入れられ、本人が直してから登録する。入れただけでは登録しない', () => {
+  it('「例文を入れる」で医療配慮用の例文がセットされ、入れただけでは登録せず「登録する」で保存できる', () => {
     render(<PatientApp />);
     act(() => socket().open());
     fireEvent.click(screen.getByText('よく使う文の登録（任意）'));
@@ -1623,9 +1626,11 @@ describe('登録した文（カスタム返答）', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '例文を入れる' }));
 
-    expect(field.value).toContain('AIの音声でお話ししています');
+    expect(field.value).toBe(
+      '発話に障害があるため、AIの音声でお話ししています。ゆっくりお話しいただけると助かります。',
+    );
     expect(window.localStorage.getItem('echobridge.customPhrases.v1')).toBeNull();
-    expect(screen.getByRole('button', { name: '例文を入れる' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: '例文を入れる' })).toHaveProperty('disabled', false);
   });
 });
 

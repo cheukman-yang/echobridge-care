@@ -1,0 +1,883 @@
+"use client";
+
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import Link from 'next/link';
+import { PhoneOff, RotateCcw, Stethoscope } from 'lucide-react';
+import { AiStatusBadge, CallNotice, MockModeNotice, SpeechUnavailableNotice } from '@/components/AiStatusBadge';
+import { AppHeader, CallStatus } from '@/components/AppHeader';
+import type { CallStatusTone } from '@/components/AppHeader';
+import { CallFlowGuide, CallSetupForm, FaceToFaceConsultEntry } from '@/components/CallSetupForm';
+import { CallInviteCard } from '@/components/CallInviteCard';
+import { CallSummary } from '@/components/CallSummary';
+import { CustomPhrasesSection } from '@/components/CustomPhrases';
+import type { TranscriptLine } from '@/components/CallSummary';
+import { ConversationLog, ORIGIN_LABELS } from '@/components/ConversationLog';
+import type { LogMessage } from '@/components/ConversationLog';
+import { CallWorkspace } from '@/components/CallWorkspace';
+import { PartnerVoiceToggle } from '@/components/PartnerVoiceToggle';
+import { SandboxCallView } from '@/components/SandboxCallView';
+import { Notice, buttonClass } from '@/components/ui';
+import { useUserLanguage } from '@/contexts/UserLanguageContext';
+import { useCallChannel, useCallSocket } from '@/hooks/useCallChannel';
+import type { AiMeta, AiStatus } from '@/lib/aiMeta';
+import {
+  CALL_CLOSED_NOTICES,
+  CALL_ERROR_NOTICES,
+  PEER_DISCONNECTED_NOTICE,
+  RECONNECTING_NOTICE,
+  SEAT_TAKEN_NOTICE,
+} from '@/lib/callNotices';
+import { DEFAULT_SPEECH_VOICE, TYPING_NOTICE_TEXT, keepsSuggestions } from '@/lib/callProtocol';
+import type {
+  AppointmentResult,
+  CallInvite,
+  CallPhase,
+  CallSnapshot,
+  CallTurn,
+  ServerMessage,
+  SpeechOrigin,
+  SpeechStatus,
+  SpeechVoice,
+  SuggestionItem,
+} from '@/lib/callProtocol';
+import { CONSULT_PATH } from '@/lib/careTypes';
+import type { ClinicCandidate } from '@/lib/careTypes';
+import { canRequestReplay, deliveryFromTurns } from '@/lib/speechDelivery';
+import type { SpeechDelivery } from '@/lib/speechDelivery';
+import { CALL_PURPOSE_PROFILES, DEFAULT_CALL_PURPOSE } from '@/lib/callPurpose';
+import type { CallPurpose } from '@/lib/callPurpose';
+import { INITIAL_COMPOSER, composerReducer, resolveConfirmedSpeech } from '@/lib/composer';
+import {
+  PartnerVoicePlayer,
+  loadPartnerVoicePreference,
+  savePartnerVoicePreference,
+  subscribePartnerVoicePreference,
+} from '@/lib/partnerVoice';
+import type { PartnerVoiceState } from '@/lib/partnerVoice';
+import type { SpeechChoice } from '@/lib/composer';
+
+const HOSPITAL_IDLE_NOTICE_MS = 5000;
+
+const SEND_REJECTED_NOTICE = '直前の送信を受け付けられませんでした。その文は相手に届いていません。もう一度お試しください。';
+
+/**
+ * 自動案内を相手の端末が読み終えるまでの見込み時間（1文字あたり）。
+ * 案内の間は相手が話せないので、読み終えた頃に解除する。案内には読み上げの報告がない。
+ */
+const NOTICE_MS_PER_CHAR = 230;
+
+interface ChatMessage extends LogMessage {
+  /** 再接続で取り戻した発言。 */
+  restored?: boolean;
+}
+
+interface PendingSpeech {
+  text: string;
+  origin: SpeechOrigin;
+  seq: number;
+}
+
+type PatientCallState = 'idle' | 'ringing' | 'connected' | 'analyzing' | 'summary';
+
+const PHASE_TO_CALL_STATE: Record<CallPhase, PatientCallState> = {
+  ringing: 'ringing',
+  connected: 'connected',
+  ending: 'analyzing',
+  ended: 'summary',
+};
+
+/** 発言の id は seq にそろえ、再接続の前後で同じ発言を別物として描き直さない。 */
+function turnToMessage(turn: CallTurn): Omit<ChatMessage, 'restored'> {
+  return {
+    id: String(turn.seq),
+    sender: turn.sender === '病院受付' ? 'hospital' : 'patient',
+    text: turn.text,
+    origin: turn.origin,
+  };
+}
+
+function speakerLabel(message: ChatMessage, partnerLabel: string): string {
+  if (message.sender === 'hospital') return partnerLabel;
+  return message.origin ? `あなた（${ORIGIN_LABELS[message.origin]}）` : 'あなた';
+}
+
+export default function PatientApp() {
+  const { userLanguage } = useUserLanguage();
+  const [callState, setCallState] = useState<PatientCallState>('idle');
+  const [intent, setIntent] = useState('');
+  const [purpose, setPurpose] = useState<CallPurpose>(DEFAULT_CALL_PURPOSE);
+  const [partnerName, setPartnerName] = useState('');
+  const [voice, setVoice] = useState<SpeechVoice>(DEFAULT_SPEECH_VOICE);
+  const [selectedClinic, setSelectedClinic] = useState<ClinicCandidate | null>(null);
+  const [isSandboxCallActive, setIsSandboxCallActive] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // 音声の作成と、相手の端末での再生の状態。発言のidごとに持ち、発言の表示より先に届いても失わない。
+  const [delivery, setDelivery] = useState<Record<string, SpeechDelivery>>({});
+  const [ttsAvailable, setTtsAvailable] = useState(false);
+  const [patientInput, setPatientInput] = useState('');
+  const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
+  const [partnerTranslation, setPartnerTranslation] = useState<string | null>(null);
+
+  const [isHospitalSpeaking, setIsHospitalSpeaking] = useState(false);
+  const [liveHospitalText, setLiveHospitalText] = useState('');
+
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [appointmentResult, setAppointmentResult] = useState<AppointmentResult | null>(null);
+
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
+  const [speechStatus, setSpeechStatus] = useState<SpeechStatus | null>(null);
+  const [lastAi, setLastAi] = useState<AiMeta | null>(null);
+  const [suggestionsAi, setSuggestionsAi] = useState<AiMeta | null>(null);
+  const [composer, dispatchComposer] = useReducer(composerReducer, INITIAL_COMPOSER);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [invite, setInvite] = useState<CallInvite | null>(null);
+  const [peerConnected, setPeerConnected] = useState(false);
+  const [callNotice, setCallNotice] = useState<string | null>(null);
+  // 相手の声を自分の端末で聞くか（本人の選択。この端末に保存）と、今の再生の状態。
+  const listenToPartner = useSyncExternalStore(
+    subscribePartnerVoicePreference,
+    loadPartnerVoicePreference,
+    () => false,
+  );
+  const [partnerVoiceState, setPartnerVoiceState] = useState<PartnerVoiceState>('off');
+  const [isPartnerAudible, setIsPartnerAudible] = useState(false);
+
+  const channel = useCallChannel('patient');
+
+  // 描画の中では使わない。初めて使う処理（発信・受信・操作）のときに作る。
+  const voicePlayerRef = useRef<PartnerVoicePlayer | null>(null);
+  const getVoicePlayer = useCallback((): PartnerVoicePlayer => {
+    voicePlayerRef.current ??= new PartnerVoicePlayer({
+      onState: setPartnerVoiceState,
+      onAudible: setIsPartnerAudible,
+    });
+    return voicePlayerRef.current;
+  }, []);
+
+  /** 通話を離れたら、相手の声の再生を止めて部品を閉じる。 */
+  const releaseVoicePlayer = useCallback(() => {
+    voicePlayerRef.current?.dispose();
+    voicePlayerRef.current = null;
+    setPartnerVoiceState('off');
+    setIsPartnerAudible(false);
+  }, []);
+
+  /**
+   * 席に入るたびに、相手の声を聞くかをサーバーへ伝える（サーバーは接続ごとに忘れる）。
+   * 聞くなら再生の部品を用意する。操作の外なので、ブラウザが止めていれば次のタップで再開する。
+   */
+  const syncPartnerVoice = useCallback((phase: CallPhase) => {
+    if (phase !== 'ringing' && phase !== 'connected') {
+      releaseVoicePlayer();
+      return;
+    }
+    const listen = loadPartnerVoicePreference();
+    channel.send({ type: 'partner_audio_listen', enabled: listen });
+    if (listen) getVoicePlayer().setEnabled(true, false);
+  }, [channel, getVoicePlayer, releaseVoicePlayer]);
+
+  const [isTypingNoticeActive, setIsTypingNoticeActive] = useState(false);
+  // WebSocketの受信処理から最新値を読むためのref。stateを依存に入れると接続を張り直してしまう。
+  const typingNoticeActiveRef = useRef(false);
+  const pendingSpeechQueueRef = useRef<PendingSpeech[]>([]);
+  const hospitalIdleTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const messageIdRef = useRef(0);
+  const polishRequestIdRef = useRef(0);
+
+  /** 通知のようにサーバーの記録にない吹き出しを足す。 */
+  const appendLocalMessage = useCallback((message: Omit<ChatMessage, 'id'>) => {
+    messageIdRef.current += 1;
+    const created = { id: `local-${messageIdRef.current}`, ...message };
+    setMessages((prev) => [...prev, created]);
+  }, []);
+
+  const appendTurn = useCallback((turn: CallTurn) => {
+    setMessages((prev) => [...prev, turnToMessage(turn)]);
+  }, []);
+
+  /** 発言の届き方を更新する。音声の作成と再生の報告は別々に届くので、項目ごとに重ねる。 */
+  const updateDelivery = useCallback((seq: number, patch: SpeechDelivery) => {
+    setDelivery((prev) => ({ ...prev, [String(seq)]: { ...prev[String(seq)], ...patch } }));
+  }, []);
+
+  const setTypingNoticeActive = useCallback((active: boolean) => {
+    typingNoticeActiveRef.current = active;
+    setIsTypingNoticeActive(active);
+  }, []);
+
+  const clearIdleTimer = useCallback(() => {
+    if (hospitalIdleTimerRef.current) {
+      clearTimeout(hospitalIdleTimerRef.current);
+      hospitalIdleTimerRef.current = null;
+    }
+  }, []);
+
+  const triggerIdleTimer = useCallback(() => {
+    clearIdleTimer();
+    hospitalIdleTimerRef.current = setTimeout(() => {
+      if (channel.send({ type: 'patient_typing_notice' })) {
+        setTypingNoticeActive(true);
+        appendLocalMessage({ sender: 'patient', text: TYPING_NOTICE_TEXT, origin: 'notice' });
+        channel.send({ type: 'patient_speaking_status', isSpeaking: true });
+      }
+    }, HOSPITAL_IDLE_NOTICE_MS);
+  }, [appendLocalMessage, channel, clearIdleTimer, setTypingNoticeActive]);
+
+  const handleNoticeComplete = useCallback(() => {
+    setTypingNoticeActive(false);
+    channel.send({ type: 'patient_speaking_status', isSpeaking: false });
+    const queued = pendingSpeechQueueRef.current;
+    pendingSpeechQueueRef.current = [];
+    queued.forEach(({ text, origin, seq }) => appendTurn({ sender: '患者', text, origin, seq }));
+  }, [appendTurn, channel, setTypingNoticeActive]);
+
+  const resetLocalCall = useCallback(() => {
+    clearIdleTimer();
+    setCallState('idle');
+    setIsSandboxCallActive(false);
+    setMessages([]);
+    setDelivery({});
+    setSuggestions([]);
+    setPartnerTranslation(null);
+    setSuggestionsAi(null);
+    setIntent('');
+    setPartnerName('');
+    setPatientInput('');
+    setIsHospitalSpeaking(false);
+    setLiveHospitalText('');
+    setAppointmentResult(null);
+    setIsGenerating(false);
+    setSendError(null);
+    setInvite(null);
+    setPeerConnected(false);
+    setTypingNoticeActive(false);
+    dispatchComposer({ type: 'close' });
+    pendingSpeechQueueRef.current = [];
+    releaseVoicePlayer();
+  }, [clearIdleTimer, releaseVoicePlayer, setTypingNoticeActive]);
+
+  /** サーバーの状態に画面を合わせる。切断中に届かなかった分もここで取り戻す。 */
+  const applySnapshot = useCallback((snapshot: CallSnapshot) => {
+    clearIdleTimer();
+    setTypingNoticeActive(false);
+    pendingSpeechQueueRef.current = [];
+    setCallState(PHASE_TO_CALL_STATE[snapshot.phase]);
+    setPurpose(snapshot.purpose);
+    setPartnerName(snapshot.partnerName);
+    setMessages(snapshot.turns.map((turn) => ({ ...turnToMessage(turn), restored: true })));
+    setDelivery(deliveryFromTurns(snapshot.turns));
+    setSuggestions(snapshot.suggestions?.suggestions ?? []);
+    setPartnerTranslation(snapshot.suggestions?.partnerTranslation ?? null);
+    setSuggestionsAi(snapshot.suggestions?.ai ?? null);
+    setIsGenerating(snapshot.isGeneratingSuggestions);
+    setIsHospitalSpeaking(snapshot.isHospitalSpeaking);
+    setLiveHospitalText('');
+    setAppointmentResult(snapshot.appointment);
+    setInvite(snapshot.invite);
+    setPeerConnected(snapshot.peerConnected);
+    setCallNotice(null);
+  }, [clearIdleTimer, setTypingNoticeActive]);
+
+  const handleServerMessage = useCallback((data: ServerMessage) => {
+    if (data.type === 'ai_status') {
+      setAiStatus({ configured: data.configured, backend: data.backend, model: data.model });
+      // 接続し直すと設定が変わっている場合があるので、前の接続の結果を持ち越さない。
+      setLastAi(null);
+    } else if (data.type === 'speech_status') {
+      setSpeechStatus(data.status);
+    } else if (data.type === 'call_joined') {
+      applySnapshot(data.snapshot);
+      syncPartnerVoice(data.snapshot.phase);
+    } else if (data.type === 'call_error') {
+      const notice = CALL_ERROR_NOTICES[data.code];
+      if (data.code === 'call_not_found') {
+        resetLocalCall();
+      } else if (!channel.hasSeat()) {
+        // 発信を断られた。入力した用件は残し、そのままかけ直せるようにする。
+        setCallState('idle');
+      } else if (data.code === 'invalid_message' || data.code === 'not_allowed') {
+        // 通話中に送った文をサーバーが受け付けなかった（通話の終了と行き違った等）。送れたように見せない。
+        setSendError(SEND_REJECTED_NOTICE);
+      }
+      if (notice) setCallNotice(notice);
+    } else if (data.type === 'call_closed') {
+      // リセットは本人の操作で、画面はもう戻っている。
+      if (data.reason === 'reset') return;
+      if (data.reason === 'retention_expired') {
+        // 確認中の予定は画面に残す。カレンダーへの追加にサーバーは要らない。
+        setCallNotice(CALL_CLOSED_NOTICES.retention_expired);
+        return;
+      }
+      resetLocalCall();
+      setCallNotice(CALL_CLOSED_NOTICES[data.reason]);
+    } else if (data.type === 'peer_status') {
+      setPeerConnected(data.connected);
+    } else if (data.type === 'answer_call') {
+      setCallState('connected');
+      setInvite(null);
+      setMessages([turnToMessage({ sender: '患者', text: data.text, origin: 'greeting', seq: data.seq })]);
+      setDelivery({});
+    } else if (data.type === 'hospital_speaking_start') {
+      clearIdleTimer();
+      setIsHospitalSpeaking(true);
+      setLiveHospitalText('');
+    } else if (data.type === 'transcript_interim') {
+      setIsHospitalSpeaking(true);
+      setLiveHospitalText(data.text);
+    } else if (data.type === 'hospital_speaking_stop') {
+      setIsHospitalSpeaking(false);
+      setLiveHospitalText('');
+    } else if (data.type === 'transcript_final') {
+      setIsHospitalSpeaking(false);
+      setLiveHospitalText('');
+      setPartnerTranslation(null);
+      appendTurn({ sender: '病院受付', text: data.text, seq: data.seq });
+      triggerIdleTimer();
+    } else if (data.type === 'generating_suggestions') {
+      setIsGenerating(true);
+      setSuggestions([]);
+      setPartnerTranslation(null);
+      setSuggestionsAi(null);
+    } else if (data.type === 'suggestions') {
+      setSuggestions(data.suggestions);
+      setPartnerTranslation(data.partnerTranslation ?? null);
+      setSuggestionsAi(data.ai);
+      setLastAi(data.ai);
+      setIsGenerating(false);
+    } else if (data.type === 'patient_polish_result') {
+      setLastAi(data.ai);
+      dispatchComposer({
+        type: 'result',
+        requestId: data.requestId,
+        polished: data.polished,
+        ai: data.ai,
+      });
+    } else if (data.type === 'patient_speech') {
+      if (typingNoticeActiveRef.current) {
+        pendingSpeechQueueRef.current.push({ text: data.text, origin: data.origin, seq: data.seq });
+      } else {
+        appendTurn({ sender: '患者', text: data.text, origin: data.origin, seq: data.seq });
+      }
+    } else if (data.type === 'tts_status') {
+      setTtsAvailable(data.available);
+    } else if (data.type === 'speech_synthesis') {
+      updateDelivery(data.seq, { synthesis: data.status, synthesisReason: data.reason });
+    } else if (data.type === 'speech_playback') {
+      // 鳴り始めの時刻は、この端末で報告を受けた時刻。長さと合わせて「読み上げ中」の進み具合の目安にする。
+      const timing =
+        data.status === 'started'
+          ? { startedAt: Date.now(), durationMs: data.durationMs }
+          : { startedAt: undefined, durationMs: undefined };
+      updateDelivery(data.seq, { playback: data.status, engine: data.engine, replayRequested: false, ...timing });
+    } else if (data.type === 'call_ending') {
+      setCallState('analyzing');
+      clearIdleTimer();
+      dispatchComposer({ type: 'close' });
+      releaseVoicePlayer();
+    } else if (data.type === 'end_call') {
+      setAppointmentResult({ appointment: data.appointment, ai: data.ai });
+      setLastAi(data.ai);
+      setCallState('summary');
+      clearIdleTimer();
+      releaseVoicePlayer();
+    }
+  }, [
+    appendTurn,
+    applySnapshot,
+    channel,
+    clearIdleTimer,
+    releaseVoicePlayer,
+    resetLocalCall,
+    syncPartnerVoice,
+    triggerIdleTimer,
+    updateDelivery,
+  ]);
+
+  const isConnected = useCallSocket(channel, {
+    onMessage: handleServerMessage,
+    onAudio: (chunk) => voicePlayerRef.current?.play(chunk),
+    onDisconnected: () => {
+      // 整形結果は切断後の接続へ返すとは限らないので、切れたら待ち続けない。
+      dispatchComposer({ type: 'connection_lost' });
+      // 発信の返事を受け取る前に切れたら、戻る席がないので最初の画面に戻す。
+      if (callState === 'ringing' && !channel.hasSeat()) setCallState('idle');
+    },
+    onSeatTaken: () => {
+      resetLocalCall();
+      setCallNotice(SEAT_TAKEN_NOTICE);
+    },
+  });
+
+  useEffect(() => clearIdleTimer, [clearIdleTimer]);
+
+  // 自動案内を相手が聞き終えた頃に、相手の発話の禁止を解き、待たせていた文を表示する。
+  useEffect(() => {
+    if (!isTypingNoticeActive) return;
+    const timer = setTimeout(handleNoticeComplete, TYPING_NOTICE_TEXT.length * NOTICE_MS_PER_CHAR);
+    return () => clearTimeout(timer);
+  }, [handleNoticeComplete, isTypingNoticeActive]);
+
+  const partnerLabel = partnerName.trim() || '相手';
+
+  const transcript = useMemo<TranscriptLine[]>(
+    () =>
+      messages.map((message) => ({
+        id: message.id,
+        speaker: speakerLabel(message, partnerLabel),
+        text: message.text,
+      })),
+    [messages, partnerLabel],
+  );
+
+  const latestPartnerText = useMemo(() => {
+    const last = [...messages].reverse().find((message) => message.sender === 'hospital');
+    return last?.text ?? null;
+  }, [messages]);
+
+  const handleStartCall = () => {
+    if (purpose === 'medical' && selectedClinic?.isSandbox) {
+      setCallNotice(null);
+      setIsSandboxCallActive(true);
+      return;
+    }
+    if (!intent.trim()) return;
+    if (
+      !channel.send({
+        type: 'start_call',
+        intent,
+        purpose,
+        partnerName: partnerName.trim(),
+        voice,
+        ...(userLanguage !== 'ja' ? { userLanguage } : {}),
+      })
+    ) {
+      setCallNotice('サーバーに接続できていないため、発信できませんでした。');
+      return;
+    }
+    setCallNotice(null);
+    setCallState('ringing');
+    // 発信の操作の中で再生を許可しておく。相手が話すのは後なので、操作の外では鳴らせないブラウザがある。
+    if (listenToPartner) getVoicePlayer().setEnabled(true, true);
+  };
+
+  /**
+   * 相手の声を聞くかを切り替える。ブラウザが止めているだけなら、この操作で再開する（オフにはしない）。
+   * 選択はこの端末に保存し、次の通話でも使う。
+   */
+  const handleTogglePartnerVoice = () => {
+    const player = getVoicePlayer();
+    if (listenToPartner && player.state === 'needs_gesture') {
+      player.unlock();
+      return;
+    }
+    const next = !listenToPartner;
+    savePartnerVoicePreference(next);
+    player.setEnabled(next, true);
+    channel.send({ type: 'partner_audio_listen', enabled: next });
+  };
+
+  /** 送った文を、相手の端末でもう一度読み上げてもらう。新しい発言にはしない。 */
+  const handleReplay = (seq: number) => {
+    const current = delivery[String(seq)];
+    if (!canRequestReplay(current)) return;
+    if (!channel.send({ type: 'speech_replay_request', seq })) return;
+    updateDelivery(seq, {
+      playback: undefined,
+      engine: undefined,
+      replayRequested: true,
+      replays: (current?.replays ?? 0) + 1,
+    });
+  };
+
+  /** 本人が確定した文を送る唯一の経路。textは書き換えずにそのまま渡す。 */
+  const sendConfirmedSpeech = (text: string, origin: SpeechOrigin): boolean => {
+    if (!channel.send({ type: 'patient_confirmed_speech', text, origin })) {
+      setSendError('サーバーに接続できていないため、送信できませんでした。');
+      return false;
+    }
+    setSendError(null);
+    clearIdleTimer();
+    // 即答フレーズと登録した文は会話をつなぐ文なので、返答候補は残す。サーバーも残す。
+    if (!keepsSuggestions(origin)) {
+      setSuggestions([]);
+      setSuggestionsAi(null);
+      setIsGenerating(false);
+    }
+    return true;
+  };
+
+  const handleSendTyped = () => {
+    const text = patientInput.trim();
+    if (!text || isHospitalSpeaking || composer.phase !== 'editing') return;
+    if (sendConfirmedSpeech(text, 'typed')) {
+      setPatientInput('');
+    }
+  };
+
+  const handleRequestPolish = () => {
+    const original = patientInput.trim();
+    if (!original || composer.phase !== 'editing') return;
+
+    polishRequestIdRef.current += 1;
+    const requestId = String(polishRequestIdRef.current);
+    if (!channel.send({ type: 'patient_polish_request', requestId, text: original })) {
+      setSendError('サーバーに接続できていないため、AIに依頼できませんでした。');
+      return;
+    }
+    setSendError(null);
+    dispatchComposer({ type: 'request', requestId, original });
+  };
+
+  const handleReviewSend = (choice: SpeechChoice) => {
+    if (isHospitalSpeaking) return;
+    const speech = resolveConfirmedSpeech(composer, choice);
+    if (speech && sendConfirmedSpeech(speech.text, speech.origin)) {
+      dispatchComposer({ type: 'close' });
+      setPatientInput('');
+    }
+  };
+
+  const handleInputKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // 日本語IMEの変換確定で発火させない。Safariは確定直後のEnterを keyCode 229 で送る。
+    if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.keyCode === 229) return;
+    // 改行は読み上げに意味がないので入れない。
+    event.preventDefault();
+    // Enterは何も送らない。AI案を作るだけなので、押し間違えても相手には届かない。
+    handleRequestPolish();
+  };
+
+  const handleSendSuggestion = (text: string) => {
+    if (isHospitalSpeaking) return;
+    const origin = suggestionsAi?.source === 'gemini' ? 'suggestion' : 'fallback_suggestion';
+    // 候補で返答したら、作成中のAI案は不要なので、届いても確認画面を開かない。
+    // 確認中の案は本人が直しているかもしれないので閉じない（入力欄の文も残る）。
+    if (sendConfirmedSpeech(text, origin) && composer.phase === 'polishing') {
+      dispatchComposer({ type: 'close' });
+    }
+  };
+
+  /**
+   * 定型の返事を送る。ボタンの文がそのまま読み上げられる。
+   * 入力中の文、作成中・確認中のAI案はそのまま残し、即答の後に続きを送れるようにする。
+   */
+  const handleSendQuickPhrase = (text: string) => {
+    if (isHospitalSpeaking) return;
+    sendConfirmedSpeech(text, 'quick_phrase');
+  };
+
+  /** 本人が登録した文を、表示どおりに送る。AIは通さない。 */
+  const handleSendCustomPhrase = (text: string) => {
+    if (isHospitalSpeaking) return;
+    sendConfirmedSpeech(text, 'custom_phrase');
+  };
+
+  const handleEndCall = () => {
+    if (!channel.send({ type: 'end_call' })) {
+      setSendError('サーバーに接続できていないため、通話を終了できませんでした。');
+      return;
+    }
+    setCallState('analyzing');
+    clearIdleTimer();
+    dispatchComposer({ type: 'close' });
+  };
+
+  /** この通話だけを閉じる。ほかの通話には届かない。 */
+  const handleResetCall = () => {
+    channel.send({ type: 'reset_call' });
+    channel.forgetSeat();
+    setCallNotice(null);
+    resetLocalCall();
+  };
+
+  /**
+   * 見出しのリセット。通話中は会話の記録が消え、相手との通話も切れるので、確かめてから行う。
+   * 「通話を終了」の隣にあり、手の動きに制約がある人の押し間違いを防ぐ。
+   */
+  const handleHeaderReset = () => {
+    const losesConversation = callState === 'connected' || callState === 'analyzing';
+    if (
+      losesConversation &&
+      !window.confirm('この通話をリセットしますか？\n相手との通話が切れ、会話の記録と予定の下書きは残りません。')
+    ) {
+      return;
+    }
+    handleResetCall();
+  };
+
+  const connectionNotice = !isConnected && callState !== 'idle'
+    ? RECONNECTING_NOTICE
+    : callState === 'connected' && !peerConnected
+    ? PEER_DISCONNECTED_NOTICE
+    : null;
+
+  const isEn = userLanguage === 'en';
+  const status = describeCallStatus(callState, isConnected, peerConnected, isHospitalSpeaking, isEn);
+  const isInCall = callState === 'connected';
+  const bannerText = connectionNotice ?? callNotice;
+  const isMockMode = aiStatus?.backend === 'mock';
+  const voiceStopped = isInCall && partnerVoiceState === 'needs_gesture';
+  const voiceUnavailable = isInCall && partnerVoiceState === 'unavailable';
+  const hasNotices =
+    !isSandboxCallActive &&
+    (isMockMode || speechStatus === 'unavailable' || Boolean(bannerText) || voiceStopped || voiceUnavailable);
+
+  return (
+    <div className="flex h-dvh flex-col bg-canvas">
+      <AppHeader
+        compactOnMobile={isInCall || isSandboxCallActive}
+        status={
+          isSandboxCallActive ? (
+            <CallStatus
+              tone="live"
+              label={isEn ? 'AI Reception Call' : 'AI模擬受付通話'}
+              detail={isEn ? 'No real call' : '外部発信なし'}
+            />
+          ) : callState === 'idle' ? undefined : (
+            <CallStatus
+              tone={status.tone}
+              label={status.label}
+              detail={
+                partnerName.trim()
+                  ? isEn
+                    ? `With ${partnerName.trim()}`
+                    : `${partnerName.trim()}との通話`
+                  : undefined
+              }
+            />
+          )
+        }
+        actions={
+          <>
+            {!isSandboxCallActive && <AiStatusBadge status={aiStatus} last={lastAi} />}
+            {callState === 'idle' && !isSandboxCallActive && (
+              <Link
+                href={CONSULT_PATH}
+                aria-label={isEn ? 'Face-to-Face Consultation' : '対面診察モード'}
+                className={buttonClass('secondary', 'md', 'px-3 text-[13px] whitespace-nowrap')}
+              >
+                <Stethoscope className="size-4 shrink-0" aria-hidden />
+                <span>{isEn ? 'Face-to-Face' : '対面診察'}</span>
+              </Link>
+            )}
+            {isInCall && <PartnerVoiceToggle state={partnerVoiceState} onToggle={handleTogglePartnerVoice} />}
+            {callState !== 'idle' && (
+              <button
+                type="button"
+                onClick={handleHeaderReset}
+                aria-label={isEn ? 'Reset this call' : 'この通話をリセット'}
+                title={
+                  isEn
+                    ? 'End this call and return to setup without saving logs'
+                    : 'この通話だけを終了して最初の画面に戻ります。記録は残りません'
+                }
+                className={buttonClass('quiet', 'md', 'max-sm:px-3')}
+              >
+                <RotateCcw className="size-4" aria-hidden />
+                <span className="max-sm:hidden">{isEn ? 'Reset' : 'リセット'}</span>
+              </button>
+            )}
+            {isInCall && (
+              <button
+                type="button"
+                onClick={handleEndCall}
+                aria-label={isEn ? 'End Call' : '通話を終了'}
+                className={buttonClass('danger', 'md', 'max-sm:px-3')}
+              >
+                <PhoneOff className="size-4" aria-hidden />
+                {isEn ? (
+                  <span>End Call</span>
+                ) : (
+                  <span>
+                    <span className="max-sm:hidden">通話を</span>終了
+                  </span>
+                )}
+              </button>
+            )}
+          </>
+        }
+      />
+
+      {hasNotices && (
+        <div className="border-b border-line bg-surface">
+          <div className="mx-auto max-w-[1440px] space-y-2 px-4 py-2.5 lg:px-6">
+            <MockModeNotice active={isMockMode} />
+            <SpeechUnavailableNotice status={speechStatus} />
+            <CallNotice text={bannerText} />
+            {voiceStopped && (
+              <Notice tone="caution" role="status">
+                {isEn
+                  ? 'Partner audio playback was paused by the browser. Tap anywhere on the screen to resume. Captions continue normally.'
+                  : '相手の声の再生をブラウザが止めています。画面のどこかを押すと再開します。字幕はそのまま届きます。'}
+              </Notice>
+            )}
+            {voiceUnavailable && (
+              <Notice tone="caution" role="status">
+                {isEn
+                  ? 'Partner audio playback is unavailable in this browser. You can continue using text captions.'
+                  : 'このブラウザでは相手の声を再生できません。字幕で会話を続けられます。'}
+              </Notice>
+            )}
+          </div>
+        </div>
+      )}
+
+      <main className="min-h-0 flex-1">
+        {callState === 'idle' && isSandboxCallActive && (
+          <SandboxCallView
+            intent={
+              intent.trim() ||
+              (isEn
+                ? 'I have had a fever and sore throat since last night and would like to book a first-visit appointment.'
+                : '昨日の夜から熱と喉の痛みがあり、初診の予約をお願いしたいです')
+            }
+            voice={voice}
+            onExit={() => setIsSandboxCallActive(false)}
+          />
+        )}
+
+        {callState === 'idle' && !isSandboxCallActive && (
+          <div className="h-full overflow-y-auto">
+            <div className="mx-auto flex w-full max-w-md flex-col gap-7 px-4 py-6">
+              <CallSetupForm
+                purpose={purpose}
+                partnerName={partnerName}
+                intent={intent}
+                voice={voice}
+                isConnected={isConnected}
+                selectedClinic={selectedClinic}
+                onSelectClinic={setSelectedClinic}
+                onPartnerNameChange={setPartnerName}
+                onIntentChange={setIntent}
+                onVoiceChange={setVoice}
+                onStart={handleStartCall}
+              />
+              <div className="space-y-5">
+                <FaceToFaceConsultEntry />
+                <CallFlowGuide />
+                <CustomPhrasesSection mode="setup" />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {callState === 'ringing' && (
+          <div className="h-full overflow-y-auto">
+            <div className="mx-auto w-full max-w-md px-4 py-8">
+              <CallInviteCard
+                invite={invite}
+                peerConnected={peerConnected}
+                partnerLabel={partnerLabel}
+                onCancel={handleResetCall}
+              />
+            </div>
+          </div>
+        )}
+
+        {isInCall && (
+          <CallWorkspace
+            log={
+              <ConversationLog
+                messages={messages}
+                delivery={delivery}
+                ttsAvailable={ttsAvailable}
+                onReplay={peerConnected && isConnected ? handleReplay : undefined}
+                partnerLabel={partnerLabel}
+                isPartnerSpeaking={isHospitalSpeaking}
+                liveText={liveHospitalText}
+                isPartnerAudible={isPartnerAudible}
+              />
+            }
+            partnerLabel={partnerLabel}
+            latestPartnerText={latestPartnerText}
+            partnerTranslation={partnerTranslation}
+            isPartnerSpeaking={isHospitalSpeaking}
+            isGenerating={isGenerating}
+            suggestions={suggestions}
+            suggestionsAi={suggestionsAi}
+            composer={composer}
+            input={patientInput}
+            sendError={sendError}
+            onInputChange={setPatientInput}
+            onInputKeyDown={handleInputKeyDown}
+            onRequestPolish={handleRequestPolish}
+            onCancelPolish={() => dispatchComposer({ type: 'close' })}
+            onSendTyped={handleSendTyped}
+            onSendSuggestion={handleSendSuggestion}
+            onSendQuickPhrase={handleSendQuickPhrase}
+            onSendCustomPhrase={handleSendCustomPhrase}
+            onEditDraft={(draft) => dispatchComposer({ type: 'edit_draft', draft })}
+            onReviewSend={handleReviewSend}
+            onCloseReview={() => dispatchComposer({ type: 'close' })}
+          />
+        )}
+
+        {callState === 'analyzing' && (
+          <div className="h-full overflow-y-auto">
+            <div className="mx-auto w-full max-w-md space-y-3 px-4 py-10" aria-live="polite">
+              <h1 className="text-[24px] font-bold leading-snug">
+                {isEn ? 'Call Ended' : '通話を終了しました'}
+              </h1>
+              <p className="flex items-center gap-2 text-[15px] text-ink-2">
+                <span aria-hidden className="eb-live-dot size-2 rounded-full bg-voice" />
+                {isEn
+                  ? 'Extracting appointment details from the conversation. You can review before saving.'
+                  : '会話の内容から予定を探しています。結果は追加する前に確認できます。'}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {callState === 'summary' && appointmentResult && (
+          <div className="h-full overflow-y-auto">
+            <CallSummary
+              result={appointmentResult}
+              manualDefaults={{
+                title: intent.trim() || CALL_PURPOSE_PROFILES[purpose].defaultEventTitle,
+                location: CALL_PURPOSE_PROFILES[purpose].partnerIsPlace ? partnerName.trim() : '',
+              }}
+              partnerLabel={partnerLabel}
+              transcript={transcript}
+              onBack={handleResetCall}
+            />
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function describeCallStatus(
+  callState: PatientCallState,
+  isConnected: boolean,
+  peerConnected: boolean,
+  isPartnerSpeaking: boolean,
+  isEn = false,
+): { tone: CallStatusTone; label: string } {
+  if (!isConnected) return { tone: 'warning', label: isEn ? 'Reconnecting' : '再接続中' };
+  switch (callState) {
+    case 'ringing':
+      return {
+        tone: 'waiting',
+        label: peerConnected
+          ? isEn
+            ? 'Ringing'
+            : '応答待ち'
+          : isEn
+          ? 'Waiting to Join'
+          : '参加待ち',
+      };
+    case 'connected':
+      if (!peerConnected) return { tone: 'warning', label: isEn ? 'Waiting for Partner' : '相手の接続待ち' };
+      return {
+        tone: 'live',
+        label: isPartnerSpeaking ? (isEn ? 'Partner Speaking' : '相手が発話中') : isEn ? 'In Call' : '通話中',
+      };
+    case 'analyzing':
+      return { tone: 'ended', label: isEn ? 'Wrapping Up' : '終了処理中' };
+    case 'summary':
+      return { tone: 'ended', label: isEn ? 'Call Ended' : '通話終了' };
+    default:
+      return { tone: 'idle', label: isEn ? 'Ready' : '準備' };
+  }
+}

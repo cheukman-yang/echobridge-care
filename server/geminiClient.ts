@@ -103,7 +103,17 @@ export function createGeminiModels(config: GeminiConfig): GeminiModels | null {
   return null;
 }
 
-export type AiFeature = 'suggestions' | 'polish' | 'appointment';
+export type AiFeature =
+  | 'suggestions'
+  | 'polish'
+  | 'appointment'
+  | 'clinic_search'
+  | 'sandbox_reception'
+  | 'consult_doctor_sim'
+  | 'consult_reply'
+  | 'consult_polish'
+  | 'consult_summary'
+  | 'draft_polish';
 
 export interface AiCallLog {
   feature: AiFeature;

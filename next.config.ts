@@ -12,6 +12,7 @@ const nextConfig: NextConfig = {
     .filter(Boolean),
   cacheComponents: true,
   partialPrefetching: true,
+  serverExternalPackages: ["@google-cloud/text-to-speech"],
   turbopack: {
     rules: {
       "*.css": {

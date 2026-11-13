@@ -38,20 +38,33 @@ interface AppHeaderProps {
   actions?: ReactNode;
   /** 通話中は狭い画面で製品名を隠し、状態と操作に場所を譲る。 */
   compactOnMobile?: boolean;
+  /** 対面診察中など、上部の余白を最小限に圧縮して会話タイムラインを広く取る。 */
+  slim?: boolean;
 }
 
-export function AppHeader({ status, actions, compactOnMobile = false }: AppHeaderProps) {
+export function AppHeader({
+  status,
+  actions,
+  compactOnMobile = false,
+  slim = false,
+}: AppHeaderProps) {
   return (
     <header className="border-b border-line bg-surface pt-[env(safe-area-inset-top)]">
       {/* キーボード表示中など高さが低いときは、上下の余白を詰めて返答欄に高さを回す。ボタンの大きさは変えない。 */}
-      <div className="mx-auto flex min-h-14 max-w-[1440px] flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 lg:px-6 tiny:min-h-0 tiny:py-0.5">
+      <div
+        className={cx(
+          'mx-auto flex max-w-[1440px] flex-wrap items-center gap-x-4 gap-y-1 lg:px-6 tiny:min-h-0 tiny:py-0.5',
+          slim ? 'min-h-9 px-3 py-1' : 'min-h-14 px-4 py-2',
+        )}
+      >
         <p
           className={cx(
-            'text-[17px] font-bold tracking-normal text-ink',
+            'font-bold tracking-normal text-ink',
+            slim ? 'text-[14px]' : 'text-[17px]',
             compactOnMobile && 'max-sm:hidden',
           )}
         >
-          EchoBridge
+          EchoBridge Care
         </p>
         {status && (
           <div

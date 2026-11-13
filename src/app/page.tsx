@@ -1,798 +1,1237 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
-import { PhoneOff, RotateCcw } from 'lucide-react';
-import { AiStatusBadge, CallNotice, MockModeNotice, SpeechUnavailableNotice } from '@/components/AiStatusBadge';
-import { AppHeader, CallStatus } from '@/components/AppHeader';
-import type { CallStatusTone } from '@/components/AppHeader';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
-import { LogIn } from 'lucide-react';
-import { CallFlowGuide, CallSetupForm, JoinCallEntry } from '@/components/CallSetupForm';
-import { CallInviteCard } from '@/components/CallInviteCard';
-import { CallSummary } from '@/components/CallSummary';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Bot,
+  CalendarClock,
+  CheckCircle2,
+  LoaderCircle,
+  LocateFixed,
+  MapPin,
+  Navigation,
+  Phone,
+  ShieldCheck,
+  Sparkles,
+  Stethoscope,
+  Wand2,
+} from 'lucide-react';
+import { AppHeader, CallStatus } from '@/components/AppHeader';
+import { CareAiModeBadge } from '@/components/CareAiModeBadge';
 import { CustomPhrasesSection } from '@/components/CustomPhrases';
-import type { TranscriptLine } from '@/components/CallSummary';
-import { ConversationLog, ORIGIN_LABELS } from '@/components/ConversationLog';
-import type { LogMessage } from '@/components/ConversationLog';
-import { CallWorkspace } from '@/components/CallWorkspace';
-import { PartnerVoiceToggle } from '@/components/PartnerVoiceToggle';
-import { Notice, buttonClass } from '@/components/ui';
-import { useCallChannel, useCallSocket } from '@/hooks/useCallChannel';
-import type { AiMeta, AiStatus } from '@/lib/aiMeta';
+import { DemoDataNotice } from '@/components/DemoDataNotice';
+import { HomeHistorySection } from '@/components/HomeHistorySection';
+import { LanguageSelector } from '@/components/LanguageSelector';
+import { SandboxCallView } from '@/components/SandboxCallView';
+import { Notice, actionCueClass, buttonClass, cx } from '@/components/ui';
+import { useUserLanguage } from '@/contexts/UserLanguageContext';
+import type { AiMeta } from '@/lib/aiMeta';
 import {
-  CALL_CLOSED_NOTICES,
-  CALL_ERROR_NOTICES,
-  PEER_DISCONNECTED_NOTICE,
-  RECONNECTING_NOTICE,
-  SEAT_TAKEN_NOTICE,
-} from '@/lib/callNotices';
-import { DEFAULT_SPEECH_VOICE, JOIN_PATH, TYPING_NOTICE_TEXT, keepsSuggestions } from '@/lib/callProtocol';
-import type {
-  AppointmentResult,
-  CallInvite,
-  CallPhase,
-  CallSnapshot,
-  CallTurn,
-  ServerMessage,
-  SpeechOrigin,
-  SpeechStatus,
-  SpeechVoice,
-  SuggestionItem,
+  DEFAULT_SPEECH_VOICE,
+  MAX_PATIENT_TEXT_LENGTH,
+  SPEECH_VOICES,
+  buildGreeting,
 } from '@/lib/callProtocol';
-import { canRequestReplay, deliveryFromTurns } from '@/lib/speechDelivery';
-import type { SpeechDelivery } from '@/lib/speechDelivery';
-import { CALL_PURPOSE_PROFILES, DEFAULT_CALL_PURPOSE } from '@/lib/callPurpose';
-import type { CallPurpose } from '@/lib/callPurpose';
-import { INITIAL_COMPOSER, composerReducer, resolveConfirmedSpeech } from '@/lib/composer';
+import type { SpeechVoice } from '@/lib/callProtocol';
+import { MAX_PARTNER_NAME_LENGTH } from '@/lib/callPurpose';
+import { stopCareSpeech } from '@/lib/careSpeech';
+import { CONSULT_PATH, SANDBOX_CLINIC } from '@/lib/careTypes';
+import type {
+  ClinicCandidate,
+  ClinicSearchResult,
+  DepartmentChoice,
+} from '@/lib/careTypes';
+import { commitPendingCustomPhrase } from '@/lib/customPhrases';
 import {
-  PartnerVoicePlayer,
-  loadPartnerVoicePreference,
-  savePartnerVoicePreference,
-  subscribePartnerVoicePreference,
-} from '@/lib/partnerVoice';
-import type { PartnerVoiceState } from '@/lib/partnerVoice';
-import type { SpeechChoice } from '@/lib/composer';
+  ensureHomeHubReset,
+  getHomeResetSnapshot,
+  getServerHomeResetSnapshot,
+  requestConsultReset,
+  setTrackedHomeMode,
+  subscribeHomeReset,
+} from '@/lib/homeReset';
+import {
+  CARE_EXAMPLES,
+  DEPARTMENT_OPTIONS,
+  PREFERRED_SLOT_PRESETS,
+  buildWizardOpeningMessage,
+  getDepartmentLabel,
+  getVoiceLabel,
+} from '@/lib/i18n';
+import { requestDraftPolish } from '@/lib/draftPolish';
 
-const HOSPITAL_IDLE_NOTICE_MS = 5000;
+type HomeMode = 'hub' | 'wizard';
+type WizardStep = 1 | 2 | 3 | 4;
 
-const SEND_REJECTED_NOTICE = '直前の送信を受け付けられませんでした。その文は相手に届いていません。もう一度お試しください。';
-
-/**
- * 自動案内を相手の端末が読み終えるまでの見込み時間（1文字あたり）。
- * 案内の間は相手が話せないので、読み終えた頃に解除する。案内には読み上げの報告がない。
- */
-const NOTICE_MS_PER_CHAR = 230;
-
-interface ChatMessage extends LogMessage {
-  /** 再接続で取り戻した発言。 */
-  restored?: boolean;
-}
-
-interface PendingSpeech {
-  text: string;
-  origin: SpeechOrigin;
-  seq: number;
-}
-
-type PatientCallState = 'idle' | 'ringing' | 'connected' | 'analyzing' | 'summary';
-
-const PHASE_TO_CALL_STATE: Record<CallPhase, PatientCallState> = {
-  ringing: 'ringing',
-  connected: 'connected',
-  ending: 'analyzing',
-  ended: 'summary',
+const STEP_TITLES: Record<'ja' | 'en', Record<WizardStep, string>> = {
+  ja: {
+    1: '症状・診療科・希望日時・エリア',
+    2: '医療機関の検索結果＆選択',
+    3: '発信前の最終確認＆よく使う文',
+    4: 'AI模擬クリニック通話＆予約完了',
+  },
+  en: {
+    1: 'Symptoms, Dept, Preferred Times & Area',
+    2: 'Clinic Search Results & Selection',
+    3: 'Final Pre-Call Review & Quick Phrases',
+    4: 'AI Mock Clinic Call & Post-Call Actions',
+  },
 };
 
-/** 発言の id は seq にそろえ、再接続の前後で同じ発言を別物として描き直さない。 */
-function turnToMessage(turn: CallTurn): Omit<ChatMessage, 'restored'> {
-  return {
-    id: String(turn.seq),
-    sender: turn.sender === '病院受付' ? 'hospital' : 'patient',
-    text: turn.text,
-    origin: turn.origin,
-  };
+function hasJapaneseCharacters(text: string): boolean {
+  return /[\u3040-\u30ff\u3400-\u9fff]/.test(text);
 }
 
-function speakerLabel(message: ChatMessage, partnerLabel: string): string {
-  if (message.sender === 'hospital') return partnerLabel;
-  return message.origin ? `あなた（${ORIGIN_LABELS[message.origin]}）` : 'あなた';
-}
-
-export default function PatientApp() {
-  const [callState, setCallState] = useState<PatientCallState>('idle');
-  const [intent, setIntent] = useState('');
-  const [purpose, setPurpose] = useState<CallPurpose>(DEFAULT_CALL_PURPOSE);
-  const [partnerName, setPartnerName] = useState('');
-  const [voice, setVoice] = useState<SpeechVoice>(DEFAULT_SPEECH_VOICE);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  // 音声の作成と、相手の端末での再生の状態。発言のidごとに持ち、発言の表示より先に届いても失わない。
-  const [delivery, setDelivery] = useState<Record<string, SpeechDelivery>>({});
-  const [ttsAvailable, setTtsAvailable] = useState(false);
-  const [patientInput, setPatientInput] = useState('');
-  const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
-
-  const [isHospitalSpeaking, setIsHospitalSpeaking] = useState(false);
-  const [liveHospitalText, setLiveHospitalText] = useState('');
-
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [appointmentResult, setAppointmentResult] = useState<AppointmentResult | null>(null);
-
-  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
-  const [speechStatus, setSpeechStatus] = useState<SpeechStatus | null>(null);
-  const [lastAi, setLastAi] = useState<AiMeta | null>(null);
-  const [suggestionsAi, setSuggestionsAi] = useState<AiMeta | null>(null);
-  const [composer, dispatchComposer] = useReducer(composerReducer, INITIAL_COMPOSER);
-  const [sendError, setSendError] = useState<string | null>(null);
-  const [invite, setInvite] = useState<CallInvite | null>(null);
-  const [peerConnected, setPeerConnected] = useState(false);
-  const [callNotice, setCallNotice] = useState<string | null>(null);
-  // 相手の声を自分の端末で聞くか（本人の選択。この端末に保存）と、今の再生の状態。
-  const listenToPartner = useSyncExternalStore(
-    subscribePartnerVoicePreference,
-    loadPartnerVoicePreference,
-    () => false,
+export default function EchoBridgeCareHomePage() {
+  const resetGeneration = useSyncExternalStore(
+    subscribeHomeReset,
+    getHomeResetSnapshot,
+    getServerHomeResetSnapshot,
   );
-  const [partnerVoiceState, setPartnerVoiceState] = useState<PartnerVoiceState>('off');
-  const [isPartnerAudible, setIsPartnerAudible] = useState(false);
 
-  const channel = useCallChannel('patient');
-
-  // 描画の中では使わない。初めて使う処理（発信・受信・操作）のときに作る。
-  const voicePlayerRef = useRef<PartnerVoicePlayer | null>(null);
-  const getVoicePlayer = useCallback((): PartnerVoicePlayer => {
-    voicePlayerRef.current ??= new PartnerVoicePlayer({
-      onState: setPartnerVoiceState,
-      onAudible: setIsPartnerAudible,
-    });
-    return voicePlayerRef.current;
-  }, []);
-
-  /** 通話を離れたら、相手の声の再生を止めて部品を閉じる。 */
-  const releaseVoicePlayer = useCallback(() => {
-    voicePlayerRef.current?.dispose();
-    voicePlayerRef.current = null;
-    setPartnerVoiceState('off');
-    setIsPartnerAudible(false);
-  }, []);
-
-  /**
-   * 席に入るたびに、相手の声を聞くかをサーバーへ伝える（サーバーは接続ごとに忘れる）。
-   * 聞くなら再生の部品を用意する。操作の外なので、ブラウザが止めていれば次のタップで再開する。
-   */
-  const syncPartnerVoice = useCallback((phase: CallPhase) => {
-    if (phase !== 'ringing' && phase !== 'connected') {
-      releaseVoicePlayer();
-      return;
-    }
-    const listen = loadPartnerVoicePreference();
-    channel.send({ type: 'partner_audio_listen', enabled: listen });
-    if (listen) getVoicePlayer().setEnabled(true, false);
-  }, [channel, getVoicePlayer, releaseVoicePlayer]);
-
-  const [isTypingNoticeActive, setIsTypingNoticeActive] = useState(false);
-  // WebSocketの受信処理から最新値を読むためのref。stateを依存に入れると接続を張り直してしまう。
-  const typingNoticeActiveRef = useRef(false);
-  const pendingSpeechQueueRef = useRef<PendingSpeech[]>([]);
-  const hospitalIdleTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  const messageIdRef = useRef(0);
-  const polishRequestIdRef = useRef(0);
-
-  /** 通知のようにサーバーの記録にない吹き出しを足す。 */
-  const appendLocalMessage = useCallback((message: Omit<ChatMessage, 'id'>) => {
-    messageIdRef.current += 1;
-    const created = { id: `local-${messageIdRef.current}`, ...message };
-    setMessages((prev) => [...prev, created]);
-  }, []);
-
-  const appendTurn = useCallback((turn: CallTurn) => {
-    setMessages((prev) => [...prev, turnToMessage(turn)]);
-  }, []);
-
-  /** 発言の届き方を更新する。音声の作成と再生の報告は別々に届くので、項目ごとに重ねる。 */
-  const updateDelivery = useCallback((seq: number, patch: SpeechDelivery) => {
-    setDelivery((prev) => ({ ...prev, [String(seq)]: { ...prev[String(seq)], ...patch } }));
-  }, []);
-
-  const setTypingNoticeActive = useCallback((active: boolean) => {
-    typingNoticeActiveRef.current = active;
-    setIsTypingNoticeActive(active);
-  }, []);
-
-  const clearIdleTimer = useCallback(() => {
-    if (hospitalIdleTimerRef.current) {
-      clearTimeout(hospitalIdleTimerRef.current);
-      hospitalIdleTimerRef.current = null;
-    }
-  }, []);
-
-  const triggerIdleTimer = useCallback(() => {
-    clearIdleTimer();
-    hospitalIdleTimerRef.current = setTimeout(() => {
-      if (channel.send({ type: 'patient_typing_notice' })) {
-        setTypingNoticeActive(true);
-        appendLocalMessage({ sender: 'patient', text: TYPING_NOTICE_TEXT, origin: 'notice' });
-        channel.send({ type: 'patient_speaking_status', isSpeaking: true });
-      }
-    }, HOSPITAL_IDLE_NOTICE_MS);
-  }, [appendLocalMessage, channel, clearIdleTimer, setTypingNoticeActive]);
-
-  const handleNoticeComplete = useCallback(() => {
-    setTypingNoticeActive(false);
-    channel.send({ type: 'patient_speaking_status', isSpeaking: false });
-    const queued = pendingSpeechQueueRef.current;
-    pendingSpeechQueueRef.current = [];
-    queued.forEach(({ text, origin, seq }) => appendTurn({ sender: '患者', text, origin, seq }));
-  }, [appendTurn, channel, setTypingNoticeActive]);
-
-  const resetLocalCall = useCallback(() => {
-    clearIdleTimer();
-    setCallState('idle');
-    setMessages([]);
-    setDelivery({});
-    setSuggestions([]);
-    setSuggestionsAi(null);
-    setIntent('');
-    setPartnerName('');
-    setPatientInput('');
-    setIsHospitalSpeaking(false);
-    setLiveHospitalText('');
-    setAppointmentResult(null);
-    setIsGenerating(false);
-    setSendError(null);
-    setInvite(null);
-    setPeerConnected(false);
-    setTypingNoticeActive(false);
-    dispatchComposer({ type: 'close' });
-    pendingSpeechQueueRef.current = [];
-    releaseVoicePlayer();
-  }, [clearIdleTimer, releaseVoicePlayer, setTypingNoticeActive]);
-
-  /** サーバーの状態に画面を合わせる。切断中に届かなかった分もここで取り戻す。 */
-  const applySnapshot = useCallback((snapshot: CallSnapshot) => {
-    clearIdleTimer();
-    setTypingNoticeActive(false);
-    pendingSpeechQueueRef.current = [];
-    setCallState(PHASE_TO_CALL_STATE[snapshot.phase]);
-    setPurpose(snapshot.purpose);
-    setPartnerName(snapshot.partnerName);
-    setMessages(snapshot.turns.map((turn) => ({ ...turnToMessage(turn), restored: true })));
-    setDelivery(deliveryFromTurns(snapshot.turns));
-    setSuggestions(snapshot.suggestions?.suggestions ?? []);
-    setSuggestionsAi(snapshot.suggestions?.ai ?? null);
-    setIsGenerating(snapshot.isGeneratingSuggestions);
-    setIsHospitalSpeaking(snapshot.isHospitalSpeaking);
-    setLiveHospitalText('');
-    setAppointmentResult(snapshot.appointment);
-    setInvite(snapshot.invite);
-    setPeerConnected(snapshot.peerConnected);
-    setCallNotice(null);
-  }, [clearIdleTimer, setTypingNoticeActive]);
-
-  const handleServerMessage = useCallback((data: ServerMessage) => {
-    if (data.type === 'ai_status') {
-      setAiStatus({ configured: data.configured, backend: data.backend, model: data.model });
-      // 接続し直すと設定が変わっている場合があるので、前の接続の結果を持ち越さない。
-      setLastAi(null);
-    } else if (data.type === 'speech_status') {
-      setSpeechStatus(data.status);
-    } else if (data.type === 'call_joined') {
-      applySnapshot(data.snapshot);
-      syncPartnerVoice(data.snapshot.phase);
-    } else if (data.type === 'call_error') {
-      const notice = CALL_ERROR_NOTICES[data.code];
-      if (data.code === 'call_not_found') {
-        resetLocalCall();
-      } else if (!channel.hasSeat()) {
-        // 発信を断られた。入力した用件は残し、そのままかけ直せるようにする。
-        setCallState('idle');
-      } else if (data.code === 'invalid_message' || data.code === 'not_allowed') {
-        // 通話中に送った文をサーバーが受け付けなかった（通話の終了と行き違った等）。送れたように見せない。
-        setSendError(SEND_REJECTED_NOTICE);
-      }
-      if (notice) setCallNotice(notice);
-    } else if (data.type === 'call_closed') {
-      // リセットは本人の操作で、画面はもう戻っている。
-      if (data.reason === 'reset') return;
-      if (data.reason === 'retention_expired') {
-        // 確認中の予定は画面に残す。カレンダーへの追加にサーバーは要らない。
-        setCallNotice(CALL_CLOSED_NOTICES.retention_expired);
-        return;
-      }
-      resetLocalCall();
-      setCallNotice(CALL_CLOSED_NOTICES[data.reason]);
-    } else if (data.type === 'peer_status') {
-      setPeerConnected(data.connected);
-    } else if (data.type === 'answer_call') {
-      setCallState('connected');
-      setInvite(null);
-      setMessages([turnToMessage({ sender: '患者', text: data.text, origin: 'greeting', seq: data.seq })]);
-      setDelivery({});
-    } else if (data.type === 'hospital_speaking_start') {
-      clearIdleTimer();
-      setIsHospitalSpeaking(true);
-      setLiveHospitalText('');
-    } else if (data.type === 'transcript_interim') {
-      setIsHospitalSpeaking(true);
-      setLiveHospitalText(data.text);
-    } else if (data.type === 'hospital_speaking_stop') {
-      setIsHospitalSpeaking(false);
-      setLiveHospitalText('');
-    } else if (data.type === 'transcript_final') {
-      setIsHospitalSpeaking(false);
-      setLiveHospitalText('');
-      appendTurn({ sender: '病院受付', text: data.text, seq: data.seq });
-      triggerIdleTimer();
-    } else if (data.type === 'generating_suggestions') {
-      setIsGenerating(true);
-      setSuggestions([]);
-      setSuggestionsAi(null);
-    } else if (data.type === 'suggestions') {
-      setSuggestions(data.suggestions);
-      setSuggestionsAi(data.ai);
-      setLastAi(data.ai);
-      setIsGenerating(false);
-    } else if (data.type === 'patient_polish_result') {
-      setLastAi(data.ai);
-      dispatchComposer({
-        type: 'result',
-        requestId: data.requestId,
-        polished: data.polished,
-        ai: data.ai,
-      });
-    } else if (data.type === 'patient_speech') {
-      if (typingNoticeActiveRef.current) {
-        pendingSpeechQueueRef.current.push({ text: data.text, origin: data.origin, seq: data.seq });
-      } else {
-        appendTurn({ sender: '患者', text: data.text, origin: data.origin, seq: data.seq });
-      }
-    } else if (data.type === 'tts_status') {
-      setTtsAvailable(data.available);
-    } else if (data.type === 'speech_synthesis') {
-      updateDelivery(data.seq, { synthesis: data.status, synthesisReason: data.reason });
-    } else if (data.type === 'speech_playback') {
-      // 鳴り始めの時刻は、この端末で報告を受けた時刻。長さと合わせて「読み上げ中」の進み具合の目安にする。
-      const timing =
-        data.status === 'started'
-          ? { startedAt: Date.now(), durationMs: data.durationMs }
-          : { startedAt: undefined, durationMs: undefined };
-      updateDelivery(data.seq, { playback: data.status, engine: data.engine, replayRequested: false, ...timing });
-    } else if (data.type === 'call_ending') {
-      setCallState('analyzing');
-      clearIdleTimer();
-      dispatchComposer({ type: 'close' });
-      releaseVoicePlayer();
-    } else if (data.type === 'end_call') {
-      setAppointmentResult({ appointment: data.appointment, ai: data.ai });
-      setLastAi(data.ai);
-      setCallState('summary');
-      clearIdleTimer();
-      releaseVoicePlayer();
-    }
-  }, [
-    appendTurn,
-    applySnapshot,
-    channel,
-    clearIdleTimer,
-    releaseVoicePlayer,
-    resetLocalCall,
-    syncPartnerVoice,
-    triggerIdleTimer,
-    updateDelivery,
-  ]);
-
-  const isConnected = useCallSocket(channel, {
-    onMessage: handleServerMessage,
-    onAudio: (chunk) => voicePlayerRef.current?.play(chunk),
-    onDisconnected: () => {
-      // 整形結果は切断後の接続へ返すとは限らないので、切れたら待ち続けない。
-      dispatchComposer({ type: 'connection_lost' });
-      // 発信の返事を受け取る前に切れたら、戻る席がないので最初の画面に戻す。
-      if (callState === 'ringing' && !channel.hasSeat()) setCallState('idle');
-    },
-    onSeatTaken: () => {
-      resetLocalCall();
-      setCallNotice(SEAT_TAKEN_NOTICE);
-    },
-  });
-
-  useEffect(() => clearIdleTimer, [clearIdleTimer]);
-
-  // 自動案内を相手が聞き終えた頃に、相手の発話の禁止を解き、待たせていた文を表示する。
+  // `/?reset=1` での直接アクセスや Next.js 16 Activity 再表示時にも確実に初期2択ハブへリセットする
   useEffect(() => {
-    if (!isTypingNoticeActive) return;
-    const timer = setTimeout(handleNoticeComplete, TYPING_NOTICE_TEXT.length * NOTICE_MS_PER_CHAR);
-    return () => clearTimeout(timer);
-  }, [handleNoticeComplete, isTypingNoticeActive]);
+    const consumeResetParam = () => {
+      if (typeof window === 'undefined') return;
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('reset') === '1') {
+        ensureHomeHubReset();
+        params.delete('reset');
+        const nextQuery = params.toString();
+        const cleanUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash}`;
+        window.history.replaceState(window.history.state, '', cleanUrl);
+      }
+    };
 
-  const partnerLabel = partnerName.trim() || '相手';
+    consumeResetParam();
+    window.addEventListener('popstate', consumeResetParam);
+    return () => {
+      window.removeEventListener('popstate', consumeResetParam);
+    };
+  }, [resetGeneration]);
 
-  const transcript = useMemo<TranscriptLine[]>(
-    () =>
-      messages.map((message) => ({
-        id: message.id,
-        speaker: speakerLabel(message, partnerLabel),
-        text: message.text,
-      })),
-    [messages, partnerLabel],
-  );
+  return <EchoBridgeCareHomeContent key={resetGeneration} />;
+}
 
-  const latestPartnerText = useMemo(() => {
-    const last = [...messages].reverse().find((message) => message.sender === 'hospital');
-    return last?.text ?? null;
-  }, [messages]);
+function EchoBridgeCareHomeContent() {
+  const { userLanguage } = useUserLanguage();
+  const isEn = userLanguage === 'en';
 
-  const handleStartCall = () => {
-    if (!intent.trim()) return;
-    if (!channel.send({ type: 'start_call', intent, purpose, partnerName: partnerName.trim(), voice })) {
-      setCallNotice('サーバーに接続できていないため、発信できませんでした。');
-      return;
-    }
-    setCallNotice(null);
-    setCallState('ringing');
-    // 発信の操作の中で再生を許可しておく。相手が話すのは後なので、操作の外では鳴らせないブラウザがある。
-    if (listenToPartner) getVoicePlayer().setEnabled(true, true);
-  };
+  const [mode, setMode] = useState<HomeMode>('hub');
+  const [wizardStep, setWizardStep] = useState<WizardStep>(1);
 
-  /**
-   * 相手の声を聞くかを切り替える。ブラウザが止めているだけなら、この操作で再開する（オフにはしない）。
-   * 選択はこの端末に保存し、次の通話でも使う。
-   */
-  const handleTogglePartnerVoice = () => {
-    const player = getVoicePlayer();
-    if (listenToPartner && player.state === 'needs_gesture') {
-      player.unlock();
-      return;
-    }
-    const next = !listenToPartner;
-    savePartnerVoicePreference(next);
-    player.setEnabled(next, true);
-    channel.send({ type: 'partner_audio_listen', enabled: next });
-  };
+  useEffect(() => {
+    setTrackedHomeMode(mode);
+  }, [mode]);
 
-  /** 送った文を、相手の端末でもう一度読み上げてもらう。新しい発言にはしない。 */
-  const handleReplay = (seq: number) => {
-    const current = delivery[String(seq)];
-    if (!canRequestReplay(current)) return;
-    if (!channel.send({ type: 'speech_replay_request', seq })) return;
-    updateDelivery(seq, {
-      playback: undefined,
-      engine: undefined,
-      replayRequested: true,
-      replays: (current?.replays ?? 0) + 1,
+  // Step 1 state
+  const [symptoms, setSymptoms] = useState('');
+  const [isPolishingSymptoms, setIsPolishingSymptoms] = useState(false);
+  const [preferredDepartment, setPreferredDepartment] = useState<DepartmentChoice>('ai_auto');
+  const [preferredSlots, setPreferredSlots] = useState<[string, string, string]>(['', '', '']);
+  const [area, setArea] = useState('');
+  const [originLocation, setOriginLocation] = useState('');
+  const [usingGpsLocation, setUsingGpsLocation] = useState(false);
+  const [gpsStatus, setGpsStatus] = useState<string | null>(null);
+  const [isLocating, setIsLocating] = useState(false);
+  const [lastAiMeta, setLastAiMeta] = useState<AiMeta | null>(null);
+
+  // Step 2 state
+  const [isSearchingClinics, setIsSearchingClinics] = useState(false);
+  const [searchResult, setSearchResult] = useState<ClinicSearchResult | null>(null);
+  const [selectedClinic, setSelectedClinic] = useState<ClinicCandidate>(SANDBOX_CLINIC);
+
+  // Step 3 state
+  const [partnerName, setPartnerName] = useState('');
+  const [intent, setIntent] = useState('');
+  const [isPolishingIntent, setIsPolishingIntent] = useState(false);
+  const [voice, setVoice] = useState<SpeechVoice>(DEFAULT_SPEECH_VOICE);
+
+  const slotPresets = PREFERRED_SLOT_PRESETS[userLanguage];
+
+  const updateSlot = (index: 0 | 1 | 2, value: string) => {
+    setPreferredSlots((prev) => {
+      const next: [string, string, string] = [prev[0], prev[1], prev[2]];
+      next[index] = value;
+      return next;
     });
   };
 
-  /** 本人が確定した文を送る唯一の経路。textは書き換えずにそのまま渡す。 */
-  const sendConfirmedSpeech = (text: string, origin: SpeechOrigin): boolean => {
-    if (!channel.send({ type: 'patient_confirmed_speech', text, origin })) {
-      setSendError('サーバーに接続できていないため、送信できませんでした。');
-      return false;
-    }
-    setSendError(null);
-    clearIdleTimer();
-    // 即答フレーズと登録した文は会話をつなぐ文なので、返答候補は残す。サーバーも残す。
-    if (!keepsSuggestions(origin)) {
-      setSuggestions([]);
-      setSuggestionsAi(null);
-      setIsGenerating(false);
-    }
-    return true;
+  const handleFillStep1Example = () => {
+    const example = CARE_EXAMPLES[userLanguage];
+    setSymptoms(example.clinicSymptoms);
+    setPreferredDepartment('internal');
+    setPreferredSlots([
+      example.preferredSlots[0],
+      example.preferredSlots[1],
+      example.preferredSlots[2],
+    ]);
+    setArea(example.clinicArea);
+    setOriginLocation(example.clinicOrigin);
+    setUsingGpsLocation(false);
+    setGpsStatus(null);
   };
 
-  const handleSendTyped = () => {
-    const text = patientInput.trim();
-    if (!text || isHospitalSpeaking || composer.phase !== 'editing') return;
-    if (sendConfirmedSpeech(text, 'typed')) {
-      setPatientInput('');
+  const handlePolishStep1Symptoms = async () => {
+    if (!symptoms.trim() || isPolishingSymptoms) return;
+    setIsPolishingSymptoms(true);
+    try {
+      const deptLabel =
+        preferredDepartment !== 'ai_auto'
+          ? getDepartmentLabel(preferredDepartment, userLanguage)
+          : '';
+      const { polishedText } = await requestDraftPolish({
+        text: symptoms,
+        field: 'symptoms',
+        userLanguage,
+        departmentLabel: deptLabel,
+        preferredSlots,
+      });
+      if (polishedText) setSymptoms(polishedText);
+    } finally {
+      setIsPolishingSymptoms(false);
     }
   };
 
-  const handleRequestPolish = () => {
-    const original = patientInput.trim();
-    if (!original || composer.phase !== 'editing') return;
-
-    polishRequestIdRef.current += 1;
-    const requestId = String(polishRequestIdRef.current);
-    if (!channel.send({ type: 'patient_polish_request', requestId, text: original })) {
-      setSendError('サーバーに接続できていないため、AIに依頼できませんでした。');
+  const handleUseCurrentLocation = () => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setArea((prev) => prev || (isEn ? 'Near Tokyo Station (Manual Area)' : '東京駅周辺（手入力エリア）'));
+      setUsingGpsLocation(false);
+      setGpsStatus(
+        isEn
+          ? 'GPS is unavailable in this browser. Filled a sample station area — feel free to edit manually.'
+          : 'このブラウザではGPS測位が利用できないため、駅名エリア欄から手入力できます。',
+      );
       return;
     }
-    setSendError(null);
-    dispatchComposer({ type: 'request', requestId, original });
+
+    setIsLocating(true);
+    setGpsStatus(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setIsLocating(false);
+        const lat = pos.coords.latitude.toFixed(3);
+        const lng = pos.coords.longitude.toFixed(3);
+        const label = isEn
+          ? `Current Location (${lat}, ${lng})`
+          : `現在地周辺（北緯${lat}・東経${lng}）`;
+        setArea(label);
+        setUsingGpsLocation(true);
+        setOriginLocation('');
+        setGpsStatus(
+          isEn
+            ? 'Applied your current GPS area (directions will start from Current Location).'
+            : '現在地の座標エリアを反映しました（経路案内の出発地も「現在地」を使用します）。',
+        );
+      },
+      () => {
+        setIsLocating(false);
+        setUsingGpsLocation(false);
+        setGpsStatus(
+          isEn
+            ? 'Location permission was declined. Please enter a station or neighborhood manually below.'
+            : '現在地の共有がオフのため、下の入力欄に駅名・地域名を手入力してください。',
+        );
+      },
+      { timeout: 3500, maximumAge: 60_000 },
+    );
   };
 
-  const handleReviewSend = (choice: SpeechChoice) => {
-    if (isHospitalSpeaking) return;
-    const speech = resolveConfirmedSpeech(composer, choice);
-    if (speech && sendConfirmedSpeech(speech.text, speech.origin)) {
-      dispatchComposer({ type: 'close' });
-      setPatientInput('');
+  const applyClinicSelectionToStep3 = (
+    clinic: ClinicCandidate,
+    resolvedSearch: ClinicSearchResult | null,
+  ) => {
+    setSelectedClinic(clinic);
+    const displayClinicName = isEn && clinic.nameEn ? clinic.nameEn : clinic.name;
+    setPartnerName(displayClinicName);
+
+    const generatedIntent = buildWizardOpeningMessage({
+      symptoms,
+      department: preferredDepartment,
+      preferredSlots,
+      suggestedIntent: resolvedSearch?.suggestedIntent,
+      lang: userLanguage,
+    });
+    setIntent(generatedIntent);
+    setWizardStep(3);
+  };
+
+  const handleStep1Next = async () => {
+    setIsSearchingClinics(true);
+    const effectiveSymptoms =
+      symptoms.trim() || CARE_EXAMPLES[userLanguage].clinicSymptoms;
+    const cleanedSlots = preferredSlots.map((s) => s.trim()).filter(Boolean);
+
+    let resolved: ClinicSearchResult;
+    try {
+      const response = await fetch('/api/clinic-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symptoms: effectiveSymptoms,
+          area: area.trim(),
+          preferredDepartment,
+          preferredSlots: cleanedSlots,
+          userLanguage,
+        }),
+      });
+      if (!response.ok) throw new Error('clinic_search_failed');
+      resolved = (await response.json()) as ClinicSearchResult;
+    } catch {
+      const deptLabel =
+        preferredDepartment === 'ai_auto'
+          ? isEn
+            ? 'Internal Medicine'
+            : '内科'
+          : getDepartmentLabel(preferredDepartment, userLanguage);
+      resolved = {
+        organizedSymptoms: effectiveSymptoms,
+        organizedSymptomsEn: effectiveSymptoms,
+        recommendedDepartments: [deptLabel],
+        urgencyNote: isEn
+          ? 'If you have difficulty breathing or severe chest pain, please seek emergency care (#7119 or 119 in Japan).'
+          : '強い呼吸苦や胸痛などの緊急症状がある場合は、救急相談（#7119）または119番をご利用ください。',
+        suggestedIntent: buildWizardOpeningMessage({
+          symptoms: effectiveSymptoms,
+          department: preferredDepartment,
+          preferredSlots,
+          lang: userLanguage,
+        }),
+        clinics: [SANDBOX_CLINIC],
+        ai: { source: 'fallback', reason: 'not_configured' },
+      };
+    } finally {
+      setIsSearchingClinics(false);
     }
+
+    setLastAiMeta(resolved.ai);
+    setSearchResult(resolved);
+    setSelectedClinic(SANDBOX_CLINIC);
+    setWizardStep(2);
   };
 
-  const handleInputKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // 日本語IMEの変換確定で発火させない。Safariは確定直後のEnterを keyCode 229 で送る。
-    if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.keyCode === 229) return;
-    // 改行は読み上げに意味がないので入れない。
-    event.preventDefault();
-    // Enterは何も送らない。AI案を作るだけなので、押し間違えても相手には届かない。
-    handleRequestPolish();
-  };
-
-  const handleSendSuggestion = (text: string) => {
-    if (isHospitalSpeaking) return;
-    const origin = suggestionsAi?.source === 'gemini' ? 'suggestion' : 'fallback_suggestion';
-    // 候補で返答したら、作成中のAI案は不要なので、届いても確認画面を開かない。
-    // 確認中の案は本人が直しているかもしれないので閉じない（入力欄の文も残る）。
-    if (sendConfirmedSpeech(text, origin) && composer.phase === 'polishing') {
-      dispatchComposer({ type: 'close' });
+  const handleFillStep3Example = () => {
+    const example = CARE_EXAMPLES[userLanguage];
+    if (!partnerName.trim()) {
+      setPartnerName(isEn && SANDBOX_CLINIC.nameEn ? SANDBOX_CLINIC.nameEn : SANDBOX_CLINIC.name);
     }
+    setIntent(
+      buildWizardOpeningMessage({
+        symptoms: symptoms.trim() || example.clinicSymptoms,
+        department: preferredDepartment === 'ai_auto' ? 'internal' : preferredDepartment,
+        preferredSlots: preferredSlots.some((s) => s.trim())
+          ? preferredSlots
+          : example.preferredSlots,
+        lang: userLanguage,
+      }),
+    );
   };
 
-  /**
-   * 定型の返事を送る。ボタンの文がそのまま読み上げられる。
-   * 入力中の文、作成中・確認中のAI案はそのまま残し、即答の後に続きを送れるようにする。
-   */
-  const handleSendQuickPhrase = (text: string) => {
-    if (isHospitalSpeaking) return;
-    sendConfirmedSpeech(text, 'quick_phrase');
-  };
-
-  /** 本人が登録した文を、表示どおりに送る。AIは通さない。 */
-  const handleSendCustomPhrase = (text: string) => {
-    if (isHospitalSpeaking) return;
-    sendConfirmedSpeech(text, 'custom_phrase');
-  };
-
-  const handleEndCall = () => {
-    if (!channel.send({ type: 'end_call' })) {
-      setSendError('サーバーに接続できていないため、通話を終了できませんでした。');
+  const handleWizardBack = () => {
+    if (wizardStep === 4) {
+      stopCareSpeech();
+      setWizardStep(3);
       return;
     }
-    setCallState('analyzing');
-    clearIdleTimer();
-    dispatchComposer({ type: 'close' });
-  };
-
-  /** この通話だけを閉じる。ほかの通話には届かない。 */
-  const handleResetCall = () => {
-    channel.send({ type: 'reset_call' });
-    channel.forgetSeat();
-    setCallNotice(null);
-    resetLocalCall();
-  };
-
-  /**
-   * 見出しのリセット。通話中は会話の記録が消え、相手との通話も切れるので、確かめてから行う。
-   * 「通話を終了」の隣にあり、手の動きに制約がある人の押し間違いを防ぐ。
-   */
-  const handleHeaderReset = () => {
-    const losesConversation = callState === 'connected' || callState === 'analyzing';
-    if (
-      losesConversation &&
-      !window.confirm('この通話をリセットしますか？\n相手との通話が切れ、会話の記録と予定の下書きは残りません。')
-    ) {
+    if (wizardStep === 3) {
+      setWizardStep(2);
       return;
     }
-    handleResetCall();
+    if (wizardStep === 2) {
+      setWizardStep(1);
+      return;
+    }
+    setMode('hub');
   };
 
-  const connectionNotice = !isConnected && callState !== 'idle'
-    ? RECONNECTING_NOTICE
-    : callState === 'connected' && !peerConnected
-    ? PEER_DISCONNECTED_NOTICE
-    : null;
+  const handleExitWizardToHub = () => {
+    stopCareSpeech();
+    setMode('hub');
+    setWizardStep(1);
+  };
 
-  const status = describeCallStatus(callState, isConnected, peerConnected, isHospitalSpeaking);
-  const isInCall = callState === 'connected';
-  const bannerText = connectionNotice ?? callNotice;
-  const isMockMode = aiStatus?.backend === 'mock';
-  const voiceStopped = isInCall && partnerVoiceState === 'needs_gesture';
-  const voiceUnavailable = isInCall && partnerVoiceState === 'unavailable';
-  const hasNotices =
-    isMockMode || speechStatus === 'unavailable' || Boolean(bannerText) || voiceStopped || voiceUnavailable;
+  const japaneseGreetingPreview = (() => {
+    const trimmed = intent.trim();
+    if (!trimmed) return null;
+    if (hasJapaneseCharacters(trimmed)) return buildGreeting(trimmed, 'medical');
+    return buildGreeting(
+      '発熱と症状の相談のため、初診の受診予約をお願いしたいです',
+      'medical',
+    );
+  })();
+
+  const resolvedDepartmentLabel =
+    preferredDepartment !== 'ai_auto'
+      ? getDepartmentLabel(preferredDepartment, userLanguage)
+      : searchResult?.recommendedDepartments?.[0] ?? '';
+
+  const handlePolishStep3Intent = async () => {
+    if (!intent.trim() || isPolishingIntent) return;
+    setIsPolishingIntent(true);
+    try {
+      const { polishedText } = await requestDraftPolish({
+        text: intent,
+        field: 'intent',
+        userLanguage,
+        departmentLabel: resolvedDepartmentLabel,
+        preferredSlots,
+      });
+      if (polishedText) setIntent(polishedText);
+    } finally {
+      setIsPolishingIntent(false);
+    }
+  };
 
   return (
     <div className="flex h-dvh flex-col bg-canvas">
       <AppHeader
-        compactOnMobile={isInCall}
+        compactOnMobile={mode === 'wizard' && wizardStep === 4}
         status={
-          callState === 'idle' ? undefined : (
-            <CallStatus
-              tone={status.tone}
-              label={status.label}
-              detail={partnerName.trim() ? `${partnerName.trim()}との通話` : undefined}
-            />
-          )
+          mode === 'wizard' ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <CallStatus
+                tone={wizardStep === 4 ? 'live' : 'idle'}
+                label={
+                  wizardStep === 4
+                    ? isEn
+                      ? 'AI Reception Call'
+                      : 'AI模擬受付通話'
+                    : `Step ${wizardStep}/4`
+                }
+                detail={
+                  wizardStep === 4
+                    ? isEn
+                      ? 'No real call'
+                      : '外部発信なし'
+                    : STEP_TITLES[userLanguage][wizardStep]
+                }
+              />
+              <CareAiModeBadge ai={lastAiMeta} compact />
+            </div>
+          ) : lastAiMeta ? (
+            <CareAiModeBadge ai={lastAiMeta} compact />
+          ) : undefined
         }
         actions={
-          <>
-            <AiStatusBadge status={aiStatus} last={lastAi} />
-            {/* 招待を受け取った人が、トップページから参加の画面へ進める入口。 */}
-            {callState === 'idle' && (
-              <Link href={JOIN_PATH} aria-label="通話に参加" className={buttonClass('secondary', 'md', 'max-sm:px-3')}>
-                <LogIn className="size-4" aria-hidden />
-                {/* 狭い画面では見出しを1行に収めるため短くする（「終了」と同じ形）。 */}
-                <span>
-                  <span className="max-sm:hidden">通話に</span>参加
-                </span>
-              </Link>
-            )}
-            {isInCall &&<PartnerVoiceToggle state={partnerVoiceState} onToggle={handleTogglePartnerVoice} />}
-            {callState !== 'idle' && (
-              <button
-                type="button"
-                onClick={handleHeaderReset}
-                aria-label="この通話をリセット"
-                title="この通話だけを終了して最初の画面に戻ります。記録は残りません"
-                className={buttonClass('quiet', 'md', 'max-sm:px-3')}
-              >
-                <RotateCcw className="size-4" aria-hidden />
-                <span className="max-sm:hidden">リセット</span>
-              </button>
-            )}
-            {isInCall && (
-              <button
-                type="button"
-                onClick={handleEndCall}
-                aria-label="通話を終了"
-                className={buttonClass('danger', 'md', 'max-sm:px-3')}
-              >
-                <PhoneOff className="size-4" aria-hidden />
-                <span>
-                  <span className="max-sm:hidden">通話を</span>終了
-                </span>
-              </button>
-            )}
-          </>
+          mode === 'wizard' ? (
+            <Link
+              href={CONSULT_PATH}
+              onClick={() => requestConsultReset()}
+              className={buttonClass('secondary', 'md', 'px-3 text-[12px] whitespace-nowrap')}
+            >
+              <Stethoscope className="size-4 shrink-0" aria-hidden />
+              <span>{isEn ? 'Consult Mode' : '対面診察へ'}</span>
+            </Link>
+          ) : undefined
         }
       />
 
-      {hasNotices && (
-        <div className="border-b border-line bg-surface">
-          <div className="mx-auto max-w-[1440px] space-y-2 px-4 py-2.5 lg:px-6">
-            <MockModeNotice active={isMockMode} />
-            <SpeechUnavailableNotice status={speechStatus} />
-            <CallNotice text={bannerText} />
-            {voiceStopped && (
-              <Notice tone="caution" role="status">
-                相手の声の再生をブラウザが止めています。画面のどこかを押すと再開します。字幕はそのまま届きます。
-              </Notice>
-            )}
-            {voiceUnavailable && (
-              <Notice tone="caution" role="status">
-                このブラウザでは相手の声を再生できません。字幕で会話を続けられます。
-              </Notice>
-            )}
+      {/* 予約ウィザード進行インジケーターバー（Step 1/4 〜 Step 4/4 ＋ 戻るボタン） */}
+      {mode === 'wizard' && (
+        <div className="shrink-0 border-b border-line bg-surface px-4 py-2.5">
+          <div className="mx-auto flex w-full max-w-md flex-col gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                data-testid="wizard-back-button"
+                onClick={handleWizardBack}
+                className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-line-strong bg-canvas px-2.5 py-1 text-[13px] font-bold text-ink hover:bg-subtle"
+              >
+                <ArrowLeft className="size-4 shrink-0" aria-hidden />
+                <span>
+                  {wizardStep === 1
+                    ? isEn
+                      ? 'Back to Home'
+                      : 'トップへ戻る'
+                    : isEn
+                    ? 'Back'
+                    : '戻る'}
+                </span>
+              </button>
+              <div className="text-right">
+                <span
+                  data-testid="wizard-step-indicator"
+                  className="inline-flex items-center rounded-full bg-voice-soft px-2.5 py-0.5 text-[12px] font-bold text-voice-strong"
+                >
+                  Step {wizardStep}/4
+                </span>
+                <p className="mt-0.5 text-[11px] font-bold text-ink-2">
+                  {STEP_TITLES[userLanguage][wizardStep]}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 gap-1.5" aria-hidden>
+              {([1, 2, 3, 4] as const).map((s) => (
+                <div
+                  key={s}
+                  className={cx(
+                    'h-1.5 rounded-full transition-colors',
+                    s <= wizardStep ? 'bg-voice' : 'bg-line-strong/50',
+                  )}
+                />
+              ))}
+            </div>
           </div>
         </div>
       )}
 
       <main className="min-h-0 flex-1">
-        {callState === 'idle' && (
-          <div className="h-full overflow-y-auto">
-            <div className="mx-auto grid w-full max-w-5xl gap-8 px-4 py-8 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-12 lg:py-12">
-              <CallSetupForm
-                purpose={purpose}
-                partnerName={partnerName}
-                intent={intent}
-                voice={voice}
-                isConnected={isConnected}
-                onPurposeChange={setPurpose}
-                onPartnerNameChange={setPartnerName}
-                onIntentChange={setIntent}
-                onVoiceChange={setVoice}
-                onStart={handleStartCall}
+        {/* ==================== トップ画面：スッキリした2択ハブ ==================== */}
+        {mode === 'hub' && (
+          <div className="h-full overflow-y-auto" data-testid="home-hub">
+            <div className="mx-auto flex w-full max-w-md flex-col gap-5 px-4 py-6">
+              <div className="space-y-1.5">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-voice-soft px-3 py-1 text-[12px] font-bold text-voice-strong">
+                  <ShieldCheck className="size-3.5 shrink-0" aria-hidden />
+                  {isEn
+                    ? 'Medical Access & Consultation Bridge'
+                    : '医療アクセス・受診サポート特化モデル'}
+                </span>
+                <h1 className="text-[24px] font-bold leading-snug text-ink">
+                  {isEn
+                    ? 'How would you like to use EchoBridge Care?'
+                    : 'どちらの場面で使いますか？'}
+                </h1>
+                <p className="text-[14px] leading-relaxed text-ink-2">
+                  {isEn
+                    ? 'Select your language first, then choose phone booking or in-room consultation.'
+                    : 'まずあなたの言語を選び、電話予約または診察室での対話サポートを選んでください。'}
+                </p>
+              </div>
+
+              {/* 言語切替スイッチ（🇯🇵 日本語 / 🇺🇸 English） */}
+              <LanguageSelector />
+
+              {/* 2つの大きなモード選択カード */}
+              <div className="grid gap-4">
+                <button
+                  type="button"
+                  data-testid="hub-card-booking"
+                  onClick={() => {
+                    setMode('wizard');
+                    setWizardStep(1);
+                  }}
+                  className={cx(
+                    'group flex w-full flex-col items-start gap-3 rounded-2xl border-2 border-voice bg-surface p-5 text-left shadow-sm ring-2 ring-teal-400/20 transition-all hover:bg-voice-soft hover:shadow-md hover:ring-4 hover:ring-teal-300/45 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-teal-400/55',
+                    actionCueClass(true),
+                  )}
+                >
+                  <div className="flex w-full items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-voice px-3 py-1 text-[12px] font-bold text-on-voice">
+                      <Phone className="size-3.5" aria-hidden />
+                      {isEn ? 'Step-by-Step AI Booking' : '4ステップ電話予約ウィザード'}
+                    </span>
+                    <span className="inline-flex items-center gap-1 text-[12px] font-bold text-voice-strong">
+                      {isEn ? 'Start' : '開始'}
+                      <ArrowRight
+                        className="size-4 shrink-0 transition-transform group-hover:translate-x-0.5"
+                        aria-hidden
+                      />
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    <h2 className="text-[20px] font-bold leading-snug text-ink">
+                      {isEn
+                        ? '🏥 Find a Clinic & Book by AI Call'
+                        : '🏥 病院を探す・AIで予約電話する'}
+                    </h2>
+                    <p className="text-[14px] leading-relaxed text-ink-2">
+                      {isEn
+                        ? 'Organize your symptoms & 3 preferred times, pick a clinic (including the safe Mock Clinic sandbox), and book via AI voice.'
+                        : '症状・診療科・希望日時3候補を整理してクリニックを選び、AI音声（審査用「模擬クリニック」対応）で安全に予約します。'}
+                    </p>
+                  </div>
+                </button>
+
+                <Link
+                  href={CONSULT_PATH}
+                  onClick={() => requestConsultReset()}
+                  data-testid="hub-card-consult"
+                  className="group flex w-full flex-col items-start gap-3 rounded-2xl border-2 border-voice/60 bg-surface p-5 text-left shadow-sm transition-all hover:border-voice hover:bg-voice-soft hover:shadow-md hover:ring-4 hover:ring-teal-300/45 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-teal-400/55"
+                >
+                  <div className="flex w-full items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-voice-soft px-3 py-1 text-[12px] font-bold text-voice-strong">
+                      <Stethoscope className="size-3.5" aria-hidden />
+                      {isEn ? 'Flat-on-Desk 180° Split UI' : '机上平置き・上部180°反転UI'}
+                    </span>
+                    <span className="inline-flex items-center gap-1 text-[12px] font-bold text-voice-strong">
+                      {isEn ? 'Open' : '開く'}
+                      <ArrowRight
+                        className="size-4 shrink-0 transition-transform group-hover:translate-x-0.5"
+                        aria-hidden
+                      />
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    <h2 className="text-[20px] font-bold leading-snug text-ink">
+                      {isEn
+                        ? '🩺 Use in Exam Room (Face-to-Face 180° Mode)'
+                        : '🩺 診察室で使う（対面診察・上下反転モード）'}
+                    </h2>
+                    <p className="text-[14px] leading-relaxed text-ink-2">
+                      {isEn
+                        ? 'Place your phone flat on the desk to communicate with the doctor via 180° medical Japanese display, instant 3-choice replies & summary.'
+                        : 'スマホを診察机に平置きし、医師側の180度反転表示・リアルタイム翻訳・3択返答・診察後サマリーで対話を支援します。'}
+                    </p>
+                  </div>
+                </Link>
+              </div>
+
+              {/* 控えめなローカル履歴セクション（予約・受診件数と直近1件プレビュー、展開して確認・再予約・対面診察引き継ぎ） */}
+              <HomeHistorySection
+                onStartRebooking={({ clinicName: name, symptomsMemo, originLocation: prevOrigin }) => {
+                  setSymptoms(symptomsMemo);
+                  setPartnerName(name);
+                  if (prevOrigin) setOriginLocation(prevOrigin);
+                  setMode('wizard');
+                  setWizardStep(1);
+                }}
               />
-              <div className="space-y-6 lg:pt-14">
-                <JoinCallEntry />
-                <CallFlowGuide />
-                <CustomPhrasesSection mode="setup" />
+            </div>
+          </div>
+        )}
+
+        {/* ==================== Step 1: 症状・診療科・希望日時3候補・エリア ==================== */}
+        {mode === 'wizard' && wizardStep === 1 && (
+          <div className="h-full overflow-y-auto" data-testid="wizard-step-1">
+            <div className="mx-auto flex w-full max-w-md flex-col gap-5 px-4 py-5">
+              <LanguageSelector compact />
+
+              <DemoDataNotice side="user" />
+
+              {/* 1. 主訴・具体的な要件 */}
+              <section className="space-y-2.5 rounded-xl border border-line bg-surface p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label htmlFor="wizard-symptoms" className="min-w-0 text-[15px] font-bold text-ink">
+                    {isEn ? '1. Symptoms & Specific Request' : '1. 主訴・具体的な要件'}
+                  </label>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="step1-ai-polish-button"
+                      disabled={!symptoms.trim() || isPolishingSymptoms}
+                      title={
+                        !symptoms.trim()
+                          ? isEn
+                            ? 'Enter your symptoms first to polish with AI'
+                            : 'メモを入力するとAIブラッシュアップが使えます'
+                          : undefined
+                      }
+                      onClick={() => void handlePolishStep1Symptoms()}
+                      className={buttonClass(
+                        'secondary',
+                        'md',
+                        'min-h-9 shrink-0 px-2.5 py-1.5 text-[12px] whitespace-nowrap',
+                      )}
+                    >
+                      {isPolishingSymptoms ? (
+                        <LoaderCircle className="size-3.5 shrink-0 animate-spin text-voice" aria-hidden />
+                      ) : (
+                        <Sparkles className="size-3.5 shrink-0 text-voice-strong" aria-hidden />
+                      )}
+                      <span>
+                        {isPolishingSymptoms
+                          ? isEn
+                            ? 'Polishing...'
+                            : '整形中...'
+                          : isEn
+                          ? '✨ AI Polish'
+                          : '✨ AIブラッシュアップ'}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="clinic-fill-example-button"
+                      onClick={handleFillStep1Example}
+                      className={buttonClass(
+                        'accent',
+                        'md',
+                        cx(
+                          'min-h-9 shrink-0 px-3 py-1.5 text-[12px] whitespace-nowrap',
+                          !symptoms.trim() && 'ring-2 ring-teal-300/60',
+                          actionCueClass(!symptoms.trim()),
+                        ),
+                      )}
+                    >
+                      <Wand2 className="size-3.5 shrink-0" aria-hidden />
+                      <span>{isEn ? 'Fill Example' : '例を入力'}</span>
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  id="wizard-symptoms"
+                  rows={3}
+                  value={symptoms}
+                  maxLength={500}
+                  onChange={(event) => setSymptoms(event.target.value)}
+                  placeholder={
+                    isEn
+                      ? 'e.g., 38°C fever and sore throat since last night. Looking for a first-visit appointment.'
+                      : '例：昨日の夜から38度の熱と喉の痛みがあります。今日受診できる初診予約を取りたいです。'
+                  }
+                  className="w-full resize-none rounded-lg border border-line-strong bg-canvas px-3 py-2.5 text-[15px] leading-relaxed text-ink placeholder:text-ink-2/70 focus:border-voice"
+                />
+              </section>
+
+              {/* 2. 希望する診療科チップ */}
+              <section className="space-y-2.5 rounded-xl border border-line bg-surface p-4">
+                <p className="text-[15px] font-bold text-ink">
+                  {isEn ? '2. Preferred Department' : '2. 希望する診療科'}
+                </p>
+                <div
+                  role="radiogroup"
+                  aria-label={isEn ? 'Preferred Department' : '希望する診療科'}
+                  className="flex flex-wrap gap-2"
+                >
+                  {DEPARTMENT_OPTIONS.map((dept) => {
+                    const checked = preferredDepartment === dept.id;
+                    const label = isEn ? dept.labelEn : dept.labelJa;
+                    return (
+                      <button
+                        key={dept.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={checked}
+                        data-testid={`dept-chip-${dept.id}`}
+                        onClick={() => setPreferredDepartment(dept.id)}
+                        className={cx(
+                          'min-h-10 rounded-full border px-3.5 py-1.5 text-[13px] font-bold transition-colors',
+                          checked
+                            ? 'border-voice bg-voice text-on-voice'
+                            : 'border-line-strong bg-canvas text-ink hover:border-voice',
+                        )}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {/* 3. 受診可能な日時候補（第1〜第3希望） */}
+              <section className="space-y-3 rounded-xl border border-line bg-surface p-4">
+                <div className="space-y-1">
+                  <p className="flex items-center gap-1.5 text-[15px] font-bold text-ink">
+                    <CalendarClock className="size-4 shrink-0 text-voice-strong" aria-hidden />
+                    <span>
+                      {isEn
+                        ? '3. Preferred Date/Time Slots (Up to 3)'
+                        : '3. 受診可能な日時候補（第1〜第3希望）'}
+                    </span>
+                  </p>
+                  <p className="text-[12px] text-ink-2">
+                    {isEn
+                      ? 'Tap a quick chip to fill the next empty slot, or type freely in each box.'
+                      : '候補チップをタップして順番に入れるか、各欄に自由入力できます。'}
+                  </p>
+                </div>
+
+                {/* クイック候補チップ */}
+                <div className="flex flex-wrap gap-1.5">
+                  {slotPresets.map((preset) => {
+                    const isUsed = preferredSlots.includes(preset);
+                    return (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => {
+                          if (isUsed) return;
+                          const emptyIdx = preferredSlots.findIndex((s) => !s.trim());
+                          const targetIdx = (emptyIdx >= 0 ? emptyIdx : 0) as 0 | 1 | 2;
+                          updateSlot(targetIdx, preset);
+                        }}
+                        className={cx(
+                          'rounded-full border px-2.5 py-1 text-[12px] font-bold transition-colors',
+                          isUsed
+                            ? 'border-voice/50 bg-voice-soft text-voice-strong'
+                            : 'border-line-strong bg-canvas text-ink-2 hover:border-voice hover:text-ink',
+                        )}
+                      >
+                        + {preset}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="space-y-2">
+                  {([0, 1, 2] as const).map((idx) => {
+                    const slotLabel = isEn
+                      ? idx === 0
+                        ? '1st Choice'
+                        : idx === 1
+                        ? '2nd Choice'
+                        : '3rd Choice'
+                      : `第${idx + 1}希望`;
+                    return (
+                      <label key={idx} className="flex items-center gap-2">
+                        <span className="w-20 shrink-0 text-[12px] font-bold text-ink-2">
+                          {slotLabel}
+                        </span>
+                        <input
+                          type="text"
+                          data-testid={`preferred-slot-${idx}`}
+                          value={preferredSlots[idx]}
+                          maxLength={80}
+                          onChange={(event) => updateSlot(idx, event.target.value)}
+                          placeholder={slotPresets[idx] ?? ''}
+                          className="min-h-10 min-w-0 flex-1 rounded-lg border border-line-strong bg-canvas px-3 text-[13px] text-ink placeholder:text-ink-2/60 focus:border-voice"
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {/* 4. 希望エリア（GPS現在地 または 手入力） */}
+              <section className="space-y-2.5 rounded-xl border border-line bg-surface p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="wizard-area" className="text-[15px] font-bold text-ink">
+                    {isEn ? '4. Preferred Area' : '4. 希望エリア'}
+                  </label>
+                  <button
+                    type="button"
+                    data-testid="use-gps-button"
+                    disabled={isLocating}
+                    onClick={handleUseCurrentLocation}
+                    className={buttonClass(
+                      'secondary',
+                      'md',
+                      'min-h-9 shrink-0 px-3 py-1 text-[12px] whitespace-nowrap',
+                    )}
+                  >
+                    {isLocating ? (
+                      <LoaderCircle className="size-3.5 animate-spin text-voice" aria-hidden />
+                    ) : (
+                      <LocateFixed className="size-3.5 text-voice" aria-hidden />
+                    )}
+                    <span>{isEn ? 'Use Current Location' : '現在地を使う'}</span>
+                  </button>
+                </div>
+                <input
+                  id="wizard-area"
+                  type="text"
+                  value={area}
+                  maxLength={100}
+                  onChange={(event) => {
+                    setArea(event.target.value);
+                    setUsingGpsLocation(false);
+                  }}
+                  placeholder={
+                    isEn
+                      ? 'Or type manually: e.g., Shinjuku Station / Shibuya'
+                      : 'GPSを使わない場合は手入力（例：新宿駅周辺・東京駅）'
+                  }
+                  className="min-h-11 w-full rounded-lg border border-line-strong bg-canvas px-3 text-[14px] text-ink placeholder:text-ink-2/70 focus:border-voice"
+                />
+                {!usingGpsLocation && (
+                  <div className="space-y-1 pt-1">
+                    <label
+                      htmlFor="wizard-origin"
+                      className="flex items-center gap-1.5 text-[12px] font-bold text-ink-2"
+                    >
+                      <Navigation className="size-3.5 shrink-0 text-voice-strong" aria-hidden />
+                      <span>
+                        {isEn
+                          ? 'Starting Point / Origin for Directions (Optional — blank uses Current Location)'
+                          : '出発地・スタート地点（任意・空欄時は「現在地」を使用）'}
+                      </span>
+                    </label>
+                    <input
+                      id="wizard-origin"
+                      data-testid="wizard-origin-input"
+                      type="text"
+                      value={originLocation}
+                      maxLength={100}
+                      onChange={(event) => setOriginLocation(event.target.value)}
+                      placeholder={
+                        isEn
+                          ? 'e.g., Shinjuku Station, Home Station (blank = Current Location)'
+                          : '例：新宿駅、自宅最寄り駅（空欄なら現在地から経路案内）'
+                      }
+                      className="min-h-10 w-full rounded-lg border border-line-strong bg-canvas px-3 text-[13px] text-ink placeholder:text-ink-2/70 focus:border-voice"
+                    />
+                  </div>
+                )}
+                {gpsStatus && <p className="text-[12px] text-ink-2">{gpsStatus}</p>}
+              </section>
+
+              <button
+                type="button"
+                data-testid="wizard-step1-next"
+                disabled={isSearchingClinics}
+                onClick={() => void handleStep1Next()}
+                className={buttonClass(
+                  'primary',
+                  'lg',
+                  cx('w-full', actionCueClass(Boolean(symptoms.trim()) && !isSearchingClinics)),
+                )}
+              >
+                {isSearchingClinics ? (
+                  <>
+                    <LoaderCircle className="size-5 animate-spin" aria-hidden />
+                    <span>
+                      {isEn ? 'Organizing & Finding Clinics...' : '症状・診療科を整理しています...'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="size-5 shrink-0" aria-hidden />
+                    <span>
+                      {isEn
+                        ? 'Analyze Symptoms & Find Clinics (Step 2)'
+                        : '症状・診療科を整理して検索（Step 2へ）'}
+                    </span>
+                    <ArrowRight className="size-4 shrink-0" aria-hidden />
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ==================== Step 2: 医療機関の検索結果＆選択 ==================== */}
+        {mode === 'wizard' && wizardStep === 2 && (
+          <div className="h-full overflow-y-auto" data-testid="wizard-step-2">
+            <div className="mx-auto flex w-full max-w-md flex-col gap-4 px-4 py-5">
+              {/* Step 1 の整理サマリー */}
+              {searchResult && (
+                <section className="space-y-2 rounded-xl border border-line bg-surface p-4">
+                  <p className="text-[12px] font-bold text-voice-strong">
+                    {isEn ? 'Organized Triage Summary' : '整理された受診目安・症状サマリー'}
+                  </p>
+                  <p className="text-[14px] font-bold leading-snug text-ink">
+                    {isEn && searchResult.organizedSymptomsEn
+                      ? searchResult.organizedSymptomsEn
+                      : searchResult.organizedSymptoms}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {searchResult.recommendedDepartments.map((dept) => (
+                      <span
+                        key={dept}
+                        className="rounded-full bg-voice-soft px-2.5 py-0.5 text-[12px] font-bold text-voice-strong"
+                      >
+                        {isEn ? `Recommended: ${dept}` : `推奨診療科: ${dept}`}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="text-[12px] leading-relaxed text-ink-2">
+                    {searchResult.urgencyNote}
+                  </p>
+                </section>
+              )}
+
+              <p className="text-[13px] font-bold text-ink-2">
+                {isEn
+                  ? 'Select a clinic below to proceed to final pre-call confirmation (Step 3):'
+                  : '連絡する医療機関を選ぶと、発信前の最終確認（Step 3）へ進みます：'}
+              </p>
+
+              {/* 最上部固定：[審査・検証用] EchoBridge Care 模擬クリニック ＋ 参考クリニック候補 */}
+              <div className="space-y-3">
+                {(searchResult?.clinics ?? [SANDBOX_CLINIC]).map((clinic) => {
+                  const displayName = isEn && clinic.nameEn ? clinic.nameEn : clinic.name;
+                  const displayDepts =
+                    isEn && clinic.departmentsEn ? clinic.departmentsEn : clinic.departments;
+                  const displayAddress =
+                    isEn && clinic.addressEn ? clinic.addressEn : clinic.address;
+                  const displayDistance =
+                    isEn && clinic.distanceNoteEn ? clinic.distanceNoteEn : clinic.distanceNote;
+                  const displayReason =
+                    isEn && clinic.matchReasonEn ? clinic.matchReasonEn : clinic.matchReason;
+
+                  return (
+                    <div
+                      key={clinic.id}
+                      data-testid={clinic.isSandbox ? 'sandbox-clinic-card' : `clinic-card-${clinic.id}`}
+                      className={cx(
+                        'space-y-2.5 rounded-2xl border-2 p-4 transition-colors',
+                        clinic.isSandbox
+                          ? 'border-voice bg-voice-soft/70 shadow-sm'
+                          : 'border-line-strong bg-surface',
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="space-y-1">
+                          {clinic.isSandbox && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-voice px-2.5 py-0.5 text-[11px] font-bold text-on-voice">
+                              <Bot className="size-3" aria-hidden />
+                              {isEn
+                                ? 'Pinned Safe Sandbox · No Real Call'
+                                : '審査・検証用ピン留め（誤発信防止・AI受付対応）'}
+                            </span>
+                          )}
+                          <h2 className="text-[16px] font-bold leading-snug text-ink">
+                            {displayName}
+                          </h2>
+                        </div>
+                      </div>
+
+                      <p className="text-[12px] font-medium text-ink-2">
+                        {displayDepts.join(' / ')} ・ {displayDistance}
+                      </p>
+                      <p className="flex items-center gap-1 text-[12px] text-ink-2">
+                        <MapPin className="size-3.5 shrink-0 text-ink-2" aria-hidden />
+                        <span>
+                          {displayAddress}（{clinic.hours}）
+                        </span>
+                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        {clinic.features.map((feat) => (
+                          <span
+                            key={feat}
+                            className="rounded-md border border-line bg-canvas px-2 py-0.5 text-[11px] text-ink-2"
+                          >
+                            {feat}
+                          </span>
+                        ))}
+                      </div>
+                      <p className="text-[12px] leading-relaxed text-ink">{displayReason}</p>
+
+                      <button
+                        type="button"
+                        data-testid={
+                          clinic.isSandbox
+                            ? 'select-sandbox-clinic-button'
+                            : `select-clinic-${clinic.id}`
+                        }
+                        onClick={() => applyClinicSelectionToStep3(clinic, searchResult)}
+                        className={buttonClass(
+                          clinic.isSandbox ? 'primary' : 'secondary',
+                          'md',
+                          cx(
+                            'w-full text-[14px]',
+                            clinic.isSandbox && 'ring-3 ring-teal-300/60',
+                            actionCueClass(Boolean(clinic.isSandbox)),
+                          ),
+                        )}
+                      >
+                        <CheckCircle2 className="size-4 shrink-0" aria-hidden />
+                        <span>
+                          {clinic.isSandbox
+                            ? isEn
+                              ? 'Select Mock Clinic & Proceed to Step 3'
+                              : 'この模擬クリニックを選んで Step 3 へ進む'
+                            : isEn
+                            ? 'Select This Clinic (Demo Call) → Step 3'
+                            : 'このクリニックを選んで Step 3 へ進む'}
+                        </span>
+                        {clinic.isSandbox && <ArrowRight className="size-4 shrink-0" aria-hidden />}
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
         )}
 
-        {callState === 'ringing' && (
-          <div className="h-full overflow-y-auto">
-            <div className="mx-auto w-full max-w-xl px-4 py-8 lg:py-12">
-              <CallInviteCard
-                invite={invite}
-                peerConnected={peerConnected}
-                partnerLabel={partnerLabel}
-                onCancel={handleResetCall}
-              />
+        {/* ==================== Step 3: 発信前の最終確認＆よく使う文 ==================== */}
+        {mode === 'wizard' && wizardStep === 3 && (
+          <div className="h-full overflow-y-auto" data-testid="wizard-step-3">
+            <div className="mx-auto flex w-full max-w-md flex-col gap-5 px-4 py-5">
+              <Notice tone="neutral">
+                {isEn
+                  ? 'Review the auto-generated opening message below before starting the in-browser AI reception call (no external phone call is placed).'
+                  : 'Step 1・2から自動生成された用件文を確認・微調整してから、AI模擬受付通話を開始できます（外部への実際の電話発信は行われません）。'}
+              </Notice>
+
+              <div className="space-y-4 rounded-2xl border border-line bg-surface p-4">
+                {/* 連絡先クリニック名 */}
+                <div className="space-y-1.5">
+                  <label htmlFor="wizard-partner-name" className="block text-[14px] font-bold text-ink">
+                    {isEn ? 'Clinic / Recipient Name' : '相手の名前（医療機関名）'}
+                  </label>
+                  <input
+                    id="wizard-partner-name"
+                    type="text"
+                    value={partnerName}
+                    maxLength={MAX_PARTNER_NAME_LENGTH}
+                    onChange={(event) => setPartnerName(event.target.value)}
+                    className="min-h-11 w-full rounded-lg border border-line-strong bg-canvas px-3.5 text-[15px] text-ink focus:border-voice"
+                  />
+                </div>
+
+                {/* 最初に伝える用件（自動生成＋編集可能） */}
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label htmlFor="wizard-intent" className="text-[14px] font-bold text-ink">
+                      {isEn ? 'Opening Message' : '最初に伝える用件'}
+                    </label>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        data-testid="step3-ai-polish-button"
+                        disabled={!intent.trim() || isPolishingIntent}
+                        title={
+                          !intent.trim()
+                            ? isEn
+                              ? 'Enter your message first to polish with AI'
+                              : '用件を入力するとAIブラッシュアップが使えます'
+                            : undefined
+                        }
+                        onClick={() => void handlePolishStep3Intent()}
+                        className={buttonClass(
+                          'secondary',
+                          'md',
+                          'min-h-8 shrink-0 px-2.5 py-1 text-[12px] whitespace-nowrap',
+                        )}
+                      >
+                        {isPolishingIntent ? (
+                          <LoaderCircle className="size-3.5 shrink-0 animate-spin text-voice" aria-hidden />
+                        ) : (
+                          <Sparkles className="size-3.5 shrink-0 text-voice-strong" aria-hidden />
+                        )}
+                        <span>
+                          {isPolishingIntent
+                            ? isEn
+                              ? 'Polishing...'
+                              : '整形中...'
+                            : isEn
+                            ? '✨ AI Polish'
+                            : '✨ AIブラッシュアップ'}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="setup-fill-example-button"
+                        onClick={handleFillStep3Example}
+                        className={buttonClass(
+                          'accent',
+                          'md',
+                          cx(
+                            'min-h-8 shrink-0 px-2.5 py-1 text-[12px] whitespace-nowrap',
+                            actionCueClass(!intent.trim()),
+                          ),
+                        )}
+                      >
+                        <Wand2 className="size-3.5 shrink-0" aria-hidden />
+                        <span>{isEn ? 'Fill Example' : '例を入力'}</span>
+                      </button>
+                    </div>
+                  </div>
+                  <textarea
+                    id="wizard-intent"
+                    rows={4}
+                    value={intent}
+                    maxLength={MAX_PATIENT_TEXT_LENGTH}
+                    onChange={(event) => setIntent(event.target.value)}
+                    placeholder={
+                      isEn
+                        ? 'Your symptoms and preferred appointment times...'
+                        : '症状と希望日時候補を含む最初の用件...'
+                    }
+                    className="w-full resize-none rounded-lg border border-line-strong bg-canvas px-3.5 py-2.5 text-[15px] leading-relaxed text-ink focus:border-voice"
+                  />
+                </div>
+
+                {/* 日本語読み上げプレビュー */}
+                {japaneseGreetingPreview && (
+                  <div
+                    data-testid="greeting-preview"
+                    className="space-y-1 rounded-xl border border-line bg-subtle px-3.5 py-2.5"
+                  >
+                    <p className="text-[12px] font-bold text-ink-2">
+                      {isEn
+                        ? 'Spoken in Japanese when the call connects'
+                        : '相手が出たときに読み上げる日本語'}
+                    </p>
+                    <p className="text-[14px] leading-relaxed text-ink">
+                      {japaneseGreetingPreview}
+                    </p>
+                  </div>
+                )}
+
+                {/* 読み上げの声 */}
+                <div className="space-y-1.5">
+                  <p className="text-[14px] font-bold text-ink">
+                    {isEn ? 'Reading Voice' : '読み上げの声'}
+                  </p>
+                  <div
+                    role="radiogroup"
+                    aria-label={isEn ? 'Reading Voice' : '読み上げの声'}
+                    className="grid grid-cols-2 gap-2"
+                  >
+                    {SPEECH_VOICES.map((option) => {
+                      const checked = voice === option;
+                      return (
+                        <button
+                          key={option}
+                          type="button"
+                          role="radio"
+                          aria-checked={checked}
+                          onClick={() => setVoice(option)}
+                          className={cx(
+                            'min-h-10 rounded-lg border px-3 py-2 text-[14px] font-bold transition-colors',
+                            checked
+                              ? 'border-voice bg-voice-soft text-voice-strong'
+                              : 'border-line-strong bg-canvas text-ink hover:border-voice',
+                          )}
+                        >
+                          {getVoiceLabel(option, userLanguage)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Step 4 通話開始ボタン */}
+                <button
+                  type="button"
+                  data-testid="wizard-step3-start-call"
+                  disabled={!intent.trim()}
+                  onClick={() => {
+                    commitPendingCustomPhrase(userLanguage);
+                    setWizardStep(4);
+                  }}
+                  className={buttonClass(
+                    'primary',
+                    'lg',
+                    cx('w-full', actionCueClass(Boolean(intent.trim()))),
+                  )}
+                >
+                  <Bot className="size-5 shrink-0" aria-hidden />
+                  <span>
+                    {isEn
+                      ? 'Start AI Reception Call (Step 4)'
+                      : 'AI模擬クリニックへ予約通話を開始（Step 4へ）'}
+                  </span>
+                </button>
+              </div>
+
+              {/* 折りたたみアコーディオン：よく使う文の登録（任意） */}
+              <CustomPhrasesSection mode="setup" prominentConfirm />
             </div>
           </div>
         )}
 
-        {isInCall && (
-          <CallWorkspace
-            log={
-              <ConversationLog
-                messages={messages}
-                delivery={delivery}
-                ttsAvailable={ttsAvailable}
-                onReplay={peerConnected && isConnected ? handleReplay : undefined}
-                partnerLabel={partnerLabel}
-                isPartnerSpeaking={isHospitalSpeaking}
-                liveText={liveHospitalText}
-                isPartnerAudible={isPartnerAudible}
-              />
-            }
-            partnerLabel={partnerLabel}
-            latestPartnerText={latestPartnerText}
-            isPartnerSpeaking={isHospitalSpeaking}
-            isGenerating={isGenerating}
-            suggestions={suggestions}
-            suggestionsAi={suggestionsAi}
-            composer={composer}
-            input={patientInput}
-            sendError={sendError}
-            onInputChange={setPatientInput}
-            onInputKeyDown={handleInputKeyDown}
-            onRequestPolish={handleRequestPolish}
-            onCancelPolish={() => dispatchComposer({ type: 'close' })}
-            onSendTyped={handleSendTyped}
-            onSendSuggestion={handleSendSuggestion}
-            onSendQuickPhrase={handleSendQuickPhrase}
-            onSendCustomPhrase={handleSendCustomPhrase}
-            onEditDraft={(draft) => dispatchComposer({ type: 'edit_draft', draft })}
-            onReviewSend={handleReviewSend}
-            onCloseReview={() => dispatchComposer({ type: 'close' })}
-          />
-        )}
-
-        {callState === 'analyzing' && (
-          <div className="h-full overflow-y-auto">
-            <div className="mx-auto w-full max-w-3xl space-y-3 px-4 py-12" aria-live="polite">
-              <h1 className="text-[26px] font-bold leading-snug">通話を終了しました</h1>
-              <p className="flex items-center gap-2 text-[15px] text-ink-2">
-                <span aria-hidden className="eb-live-dot size-2 rounded-full bg-voice" />
-                会話の内容から予定を探しています。結果は追加する前に確認できます。
-              </p>
-            </div>
-          </div>
-        )}
-
-        {callState === 'summary' && appointmentResult && (
-          <div className="h-full overflow-y-auto">
-            <CallSummary
-              result={appointmentResult}
-              manualDefaults={{
-                title: intent.trim() || CALL_PURPOSE_PROFILES[purpose].defaultEventTitle,
-                location: CALL_PURPOSE_PROFILES[purpose].partnerIsPlace ? partnerName.trim() : '',
-              }}
-              partnerLabel={partnerLabel}
-              transcript={transcript}
-              onBack={handleResetCall}
+        {/* ==================== Step 4: AI模擬クリニック通話＆予約完了アクション ==================== */}
+        {mode === 'wizard' && wizardStep === 4 && (
+          <div className="h-full" data-testid="wizard-step-4">
+            <SandboxCallView
+              intent={
+                intent.trim() ||
+                buildWizardOpeningMessage({
+                  symptoms,
+                  department: preferredDepartment,
+                  preferredSlots,
+                  lang: userLanguage,
+                })
+              }
+              voice={voice}
+              clinic={selectedClinic}
+              symptomsMemo={symptoms.trim() || intent.trim()}
+              preferredSlots={preferredSlots}
+              departmentLabel={resolvedDepartmentLabel}
+              originLocation={usingGpsLocation ? '' : originLocation}
+              onAiMeta={setLastAiMeta}
+              onExit={handleExitWizardToHub}
             />
           </div>
         )}
       </main>
     </div>
   );
-}
-
-function describeCallStatus(
-  callState: PatientCallState,
-  isConnected: boolean,
-  peerConnected: boolean,
-  isPartnerSpeaking: boolean,
-): { tone: CallStatusTone; label: string } {
-  if (!isConnected) return { tone: 'warning', label: '再接続中' };
-  switch (callState) {
-    case 'ringing':
-      return { tone: 'waiting', label: peerConnected ? '応答待ち' : '参加待ち' };
-    case 'connected':
-      if (!peerConnected) return { tone: 'warning', label: '相手の接続待ち' };
-      return { tone: 'live', label: isPartnerSpeaking ? '相手が発話中' : '通話中' };
-    case 'analyzing':
-      return { tone: 'ended', label: '終了処理中' };
-    case 'summary':
-      return { tone: 'ended', label: '通話終了' };
-    default:
-      return { tone: 'idle', label: '準備' };
-  }
 }

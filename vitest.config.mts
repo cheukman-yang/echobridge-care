@@ -10,5 +10,6 @@ export default defineConfig({
     // 実APIのテストは認証が必要なので npm run test:live、配置のテストは実ブラウザが要るので npm run test:layout で別に実行する。
     exclude: ['tests/live/**', 'tests/layout/**', 'node_modules/**'],
     restoreMocks: true,
+    execArgv: ['--no-experimental-webstorage'],
   },
 });

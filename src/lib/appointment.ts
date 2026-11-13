@@ -539,6 +539,46 @@ export function joinPlace(location: string, address: string): string {
 }
 
 /**
+ * 模擬クリニックや参考候補に含まれる架空の施設名・ビル名・階数タグを除去し、
+ * Google Maps の「経路案内（Directions）」と「周辺地図（Search）」の両方で同一の実在地点を指す検索クエリを返す。
+ */
+export function resolveClinicMapQuery(
+  clinic: { isSandbox?: boolean; address?: string; mapQuery?: string },
+  fallbackAddress?: string | null,
+): string {
+  const DEFAULT_REAL_LANDMARK = '東京都千代田区丸の内1-9-1';
+  if (clinic.mapQuery?.trim()) {
+    return clinic.mapQuery.trim();
+  }
+  if (clinic.isSandbox) {
+    return DEFAULT_REAL_LANDMARK;
+  }
+
+  const raw = (fallbackAddress || clinic.address || '').trim();
+  if (!raw) return DEFAULT_REAL_LANDMARK;
+
+  const cleaned = raw
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/（[^）]*(?:架空|参考|検証|模擬|手入力)[^）]*）/g, ' ')
+    .replace(/\([^)]*(?:Fictional|Sample|Mock|Review|Testing|Manual)[^)]*\)/gi, ' ')
+    .replace(/丸の内メディカルプラザ\s*\d*(?:階|F)?/gi, ' ')
+    .replace(/メディカルビル\s*\d*(?:階|F)?/gi, ' ')
+    .replace(/セントラルタワー\s*\d*(?:階|F)?/gi, ' ')
+    .replace(/Medical\s+(?:Plaza|Bldg\.?|Building)\s*\d*F?,?/gi, ' ')
+    .replace(/Central\s+Tower\s*\d*F?,?/gi, ' ')
+    .replace(/\b(?:1-4-2|2-8-5)\b/g, ' ')
+    .replace(/\bAround\s+/gi, '')
+    .replace(/駅周辺/g, '駅')
+    .replace(/周辺/g, '')
+    .replace(/\s*\d+(?:階|F)\b/gi, '')
+    .replace(/[、,]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return cleaned || DEFAULT_REAL_LANDMARK;
+}
+
+/**
  * Googleマップで場所を検索するURL。検索結果を本人が確かめるためのもので、施設や住所を確定しない。
  * 場所が空なら null。
  */
@@ -548,6 +588,24 @@ export function buildMapsSearchUrl(place: string): string | null {
   return `${MAPS_SEARCH_URL}?${new URLSearchParams({ api: '1', query }).toString()}`;
 }
 
+/**
+ * Googleマップで病院・目的地への経路案内（Directions）を開くURL（APIキー不要）。
+ * origin が指定されていれば出発地に設定し、空欄・未指定時は Google Maps 側の「現在地」が使われる。
+ * 目的地が空なら null。
+ */
+export function buildMapsDirectionsUrl(destination: string, origin?: string): string | null {
+  const query = destination.trim().slice(0, MAX_MAP_QUERY_LENGTH);
+  if (!query) return null;
+  const trimmedOrigin = origin?.trim().slice(0, MAX_MAP_QUERY_LENGTH);
+  const params = new URLSearchParams({
+    api: '1',
+    ...(trimmedOrigin ? { origin: trimmedOrigin } : {}),
+    destination: query,
+    travelmode: 'transit',
+  });
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
 /** Googleカレンダーを開くURL。日付があればその日の表示にする。本人がGoogleにログインして自分で見る。 */
 export function buildCalendarDayUrl(date: string | null): string {
   if (!date || !isValidDate(date)) return CALENDAR_HOME_URL;
@@ -555,7 +613,7 @@ export function buildCalendarDayUrl(date: string | null): string {
   return `${CALENDAR_HOME_URL}/day/${year}/${month}/${day}`;
 }
 
-/** Googleカレンダーの作成画面を開くURL。最後に保存するのは本人。 */
+/** Googleカレンダーの作成画面を開くURL（時刻指定あり）。最後に保存するのは本人。 */
 export function buildCalendarUrl(appointment: ConfirmedAppointment): string {
   const { date, startTime, endTime, title, location, address, details } = appointment;
   const start = toCalendarStamp(date, startTime);
@@ -567,6 +625,30 @@ export function buildCalendarUrl(appointment: ConfirmedAppointment): string {
     ctz: TIME_ZONE,
     location: joinPlace(location, address ?? ''),
     details,
+  });
+  return `${CALENDAR_BASE_URL}?${params.toString()}`;
+}
+
+/**
+ * 時刻が未定・言及なしの再診予定などを「終日イベント（YYYYMMDD/YYYYMMDD+1）」として
+ * Googleカレンダーの作成画面で開くURL。
+ */
+export function buildCalendarAllDayUrl(input: {
+  title: string;
+  date: string;
+  location: string;
+  address?: string;
+  details: string;
+}): string {
+  const startDay = input.date.replaceAll('-', '');
+  const endDay = addDays(input.date, 1).replaceAll('-', '');
+  const params = new URLSearchParams({
+    action: 'TEMPLATE',
+    text: input.title,
+    dates: `${startDay}/${endDay}`,
+    ctz: TIME_ZONE,
+    location: joinPlace(input.location, input.address ?? ''),
+    details: input.details,
   });
   return `${CALENDAR_BASE_URL}?${params.toString()}`;
 }

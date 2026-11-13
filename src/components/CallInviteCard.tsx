@@ -33,7 +33,7 @@ export function CallInviteCard({ invite, peerConnected, partnerLabel, onCancel }
 
   const shareLink = async () => {
     try {
-      await navigator.share({ title: 'EchoBridgeの通話', text: '通話への招待です', url: link });
+      await navigator.share({ title: 'EchoBridge Careの通話', text: '通話への招待です', url: link });
     } catch {
       // 共有をやめただけの場合もあるので、何も表示しない。
     }

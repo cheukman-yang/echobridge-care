@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
+import { useIsMobileFrame } from '@/contexts/MobileFrameContext';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { AiMeta } from '@/lib/aiMeta';
 import type { SuggestionItem } from '@/lib/callProtocol';
@@ -34,6 +35,7 @@ interface CallWorkspaceProps {
   log: ReactNode;
   partnerLabel: string;
   latestPartnerText: string | null;
+  partnerTranslation?: string | null;
   isPartnerSpeaking: boolean;
   isGenerating: boolean;
   suggestions: SuggestionItem[];
@@ -73,6 +75,7 @@ export function CallWorkspace(props: CallWorkspaceProps) {
     log,
     partnerLabel,
     latestPartnerText,
+    partnerTranslation,
     isPartnerSpeaking,
     isGenerating,
     suggestions,
@@ -82,8 +85,9 @@ export function CallWorkspace(props: CallWorkspaceProps) {
     sendError,
   } = props;
 
-  // matchMedia のない環境（テスト）では同時表示にする。
-  const wide = useMediaQuery(WIDE_LAYOUT_QUERY, true);
+  // RootLayout のモバイル筐体フレーム内では常に狭い画面レイアウトにし、単体テスト描画時は画面幅に従う。
+  const isMobileFrame = useIsMobileFrame();
+  const wide = useMediaQuery(WIDE_LAYOUT_QUERY, true) && !isMobileFrame;
   const [tab, setTab] = useState<ReplyTab>('suggestions');
   const panelScrollerRef = useRef<HTMLDivElement>(null);
   const composeScrollerRef = useRef<HTMLDivElement>(null);
@@ -201,8 +205,13 @@ export function CallWorkspace(props: CallWorkspaceProps) {
           <LatestPartnerUtterance
             partnerLabel={partnerLabel}
             text={latestPartnerText}
+            translation={partnerTranslation}
             isPartnerSpeaking={isPartnerSpeaking}
           />
+        ) : partnerTranslation ? (
+          <p className="mb-3 rounded-lg bg-voice-soft px-3 py-2 text-[13px] font-bold text-voice-strong">
+            🇺🇸 {partnerTranslation}
+          </p>
         ) : null}
         <div {...panelProps('suggestions')}>
           <SuggestionsSection

@@ -924,7 +924,7 @@ export default function HospitalApp() {
                 {isConnected ? '通話に参加する' : 'サーバーに接続しています…'}
               </button>
               <p className="border-t border-line pt-4 text-[13px] leading-relaxed text-ink-2">
-                EchoBridgeは、発話が難しい人がAIの支援を受けて話すための通話です。相手の言葉は合成音声で読み上げられ、あなたの声は文字にして相手に届きます（相手が選べば、押して話している間の声も相手に聞こえます）。インストールとログインは不要です。
+                EchoBridge Careは、発話が難しい方や外国語話者がAIの支援を受けて話すための医療・生活支援通話です。相手の言葉は合成音声で読み上げられ、あなたの声は文字にして相手に届きます（相手が選べば、押して話している間の声も相手に聞こえます）。インストールとログインは不要です。
               </p>
               <p className="text-[13px] text-ink-2">
                 自分から発信するときは

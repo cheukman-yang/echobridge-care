@@ -195,3 +195,91 @@ input::-webkit-date-and-time-value {
     animation: none;
   }
 }
+
+/*
+ * 次に押すべき1箇所だけを直感的に案内する「閃光（シマー発光）＋マイクロ振動（ナッジ）」エフェクト。
+ * 1) 表面を斜めに光のハイライト（linear-gradient）がスーッと横切る上品な閃光
+ * 2) 数秒ごとに1〜2pxだけ「コトン」と控えめに揺れるマイクロ振動
+ * アクセシビリティ配慮として prefers-reduced-motion: reduce 時は完全停止する。
+ */
+@keyframes eb-action-shimmer {
+  0% {
+    transform: translate3d(-150%, 0, 0) skewX(-20deg);
+  }
+  34%,
+  100% {
+    transform: translate3d(250%, 0, 0) skewX(-20deg);
+  }
+}
+
+@keyframes eb-action-nudge {
+  0%,
+  72%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  76% {
+    transform: translate3d(-1.5px, -1px, 0) rotate(-0.35deg);
+  }
+  80% {
+    transform: translate3d(2px, 0, 0) rotate(0.35deg);
+  }
+  84% {
+    transform: translate3d(-1px, 0.5px, 0) rotate(-0.2deg);
+  }
+  88% {
+    transform: translate3d(0.5px, 0, 0) rotate(0deg);
+  }
+}
+
+.animate-action-cue {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  animation: eb-action-nudge 3.2s cubic-bezier(0.36, 0.07, 0.19, 0.97) infinite;
+}
+
+.animate-action-cue::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 56%;
+  pointer-events: none;
+  background: linear-gradient(
+    112deg,
+    transparent 12%,
+    rgba(255, 255, 255, 0.14) 35%,
+    rgba(255, 255, 255, 0.62) 50%,
+    rgba(255, 255, 255, 0.14) 65%,
+    transparent 88%
+  );
+  transform: translate3d(-150%, 0, 0) skewX(-20deg);
+  animation: eb-action-shimmer 3.2s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.animate-action-cue:hover,
+.animate-action-cue:active {
+  animation-play-state: paused;
+}
+
+.animate-action-cue:disabled,
+.animate-action-cue[aria-disabled="true"] {
+  animation: none;
+}
+
+.animate-action-cue:disabled::after,
+.animate-action-cue[aria-disabled="true"]::after {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-action-cue,
+  .animate-action-cue::after {
+    animation: none !important;
+    transform: none !important;
+  }
+
+  .animate-action-cue::after {
+    display: none;
+  }
+}

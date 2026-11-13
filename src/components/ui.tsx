@@ -6,17 +6,30 @@ export function cx(...classes: Array<string | false | null | undefined>): string
   return classes.filter(Boolean).join(' ');
 }
 
-type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'quiet';
+export type ButtonVariant = 'primary' | 'accent' | 'guidePulse' | 'secondary' | 'danger' | 'quiet';
 type ButtonSize = 'md' | 'lg';
 
+export const ACTION_CUE_CLASS = 'animate-action-cue';
+
+/** 今まさに押すべき1箇所だけに閃光＋マイクロ振動クラスを付与する。 */
+export function actionCueClass(active: boolean): string {
+  return active ? ACTION_CUE_CLASS : '';
+}
+
 const BUTTON_BASE =
-  'inline-flex items-center justify-center gap-2 rounded-lg font-bold select-none transition-colors duration-150 disabled:cursor-not-allowed';
+  'inline-flex items-center justify-center gap-2 rounded-lg font-bold select-none transition-all duration-150 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-teal-400/50 disabled:cursor-not-allowed';
 
 const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
-  primary: 'bg-voice text-on-voice hover:bg-voice-strong disabled:bg-subtle disabled:text-ink-2',
+  primary:
+    'bg-voice text-on-voice shadow-sm ring-2 ring-teal-500/20 hover:bg-voice-strong hover:shadow hover:ring-4 hover:ring-teal-300/45 active:scale-[0.99] disabled:bg-subtle disabled:text-ink-2 disabled:shadow-none disabled:ring-0',
+  accent:
+    'border-2 border-voice bg-voice-soft text-voice-strong shadow-xs hover:bg-voice hover:text-on-voice hover:ring-3 hover:ring-teal-300/50 active:scale-[0.99] disabled:border-line disabled:bg-surface disabled:text-ink-2 disabled:shadow-none',
+  guidePulse:
+    'border border-voice bg-voice text-on-voice shadow-md hover:bg-voice-strong ring-3 ring-teal-300/70 animate-action-cue disabled:bg-subtle disabled:text-ink-2 disabled:shadow-none disabled:ring-0',
   secondary:
-    'border border-line-strong bg-surface text-ink hover:bg-subtle disabled:border-line disabled:text-ink-2 disabled:hover:bg-surface',
-  danger: 'bg-danger text-white hover:bg-danger-strong disabled:bg-subtle disabled:text-ink-2',
+    'border border-line-strong bg-surface text-ink hover:border-voice/50 hover:bg-subtle disabled:border-line disabled:text-ink-2 disabled:hover:bg-surface',
+  danger:
+    'bg-danger text-white shadow-xs hover:bg-danger-strong disabled:bg-subtle disabled:text-ink-2 disabled:shadow-none',
   quiet: 'text-voice hover:bg-voice-soft disabled:text-ink-2 disabled:hover:bg-transparent',
 };
 

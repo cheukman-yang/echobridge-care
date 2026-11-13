@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { BIZ_UDPGothic } from "next/font/google";
+import { MobileFrameProvider } from "@/contexts/MobileFrameContext";
+import { UserLanguageProvider } from "@/contexts/UserLanguageContext";
 import "./globals.css";
 
 /**
@@ -14,8 +16,8 @@ const udGothic = BIZ_UDPGothic({
 });
 
 export const metadata: Metadata = {
-  title: "EchoBridge",
-  description: "発話が難しい人が、AIの支援で自分の言葉を伝えられるWeb通話",
+  title: "EchoBridge Care",
+  description: "発話・聴覚障がいのある方や外国語話者のための医療アクセス・対面診察支援AI",
 };
 
 export const viewport: Viewport = {
@@ -28,7 +30,18 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="ja" className={`${udGothic.variable} h-full`}>
-      <body className="min-h-full">{children}</body>
+      <body className="min-h-full bg-subtle">
+        <UserLanguageProvider>
+          <MobileFrameProvider>
+            <div
+              data-testid="mobile-app-shell"
+              className="mx-auto flex min-h-dvh w-full max-w-md flex-col border-x border-line bg-canvas shadow-xl"
+            >
+              {children}
+            </div>
+          </MobileFrameProvider>
+        </UserLanguageProvider>
+      </body>
     </html>
   );
 }

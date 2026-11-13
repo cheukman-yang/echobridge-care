@@ -1,6 +1,7 @@
 import type { AiMeta, AiStatus } from './aiMeta';
 import { CALL_PURPOSE_PROFILES, DEFAULT_CALL_PURPOSE } from './callPurpose';
 import type { CallPurpose } from './callPurpose';
+import type { UserLanguage } from './userLanguage';
 
 /** 患者が入力・確定できる文の上限。Geminiへの入力量の上限も兼ねる。 */
 export const MAX_PATIENT_TEXT_LENGTH = 300;
@@ -86,7 +87,10 @@ export function parseInviteFromHash(hash: string): string | null {
 }
 
 export interface SuggestionItem {
+  /** 相手（受付・医師）へ日本語で読み上げ・提示する文。 */
   text: string;
+  /** English選択時にボタン主表示として出す英語テキスト。未指定なら text を使う。 */
+  displayText?: string;
   tag: string;
 }
 
@@ -262,6 +266,7 @@ export interface CallInvite {
 
 export interface SuggestionSet {
   suggestions: SuggestionItem[];
+  partnerTranslation?: string;
   ai: AiMeta;
 }
 
@@ -280,6 +285,8 @@ export interface CallSnapshot {
   purpose: CallPurpose;
   /** 本人が入力した相手の名前。なければ空文字。 */
   partnerName: string;
+  /** 患者が選択した表示・入力言語（既定は 'ja'）。 */
+  userLanguage?: UserLanguage;
   turns: CallTurn[];
   peerConnected: boolean;
   isHospitalSpeaking: boolean;
@@ -353,12 +360,13 @@ export type ServerMessage =
   /** 録音できたのに文字にならなかった。話した相手の席にだけ送る。 */
   | { type: 'transcript_empty' }
   | { type: 'generating_suggestions' }
-  | { type: 'suggestions'; suggestions: SuggestionItem[]; ai: AiMeta }
+  | { type: 'suggestions'; suggestions: SuggestionItem[]; partnerTranslation?: string; ai: AiMeta }
   | {
       type: 'patient_polish_result';
       requestId: string;
       original: string;
       polished: string | null;
+      englishNote?: string;
       ai: AiMeta;
     }
   | { type: 'patient_speech'; text: string; origin: SpeechOrigin; seq: number }
@@ -384,7 +392,14 @@ export type ServerMessage =
 
 /** ブラウザからサーバーへ送るメッセージ。席のない接続が送れるのは start_call と join_call だけ。 */
 export type ClientMessage =
-  | { type: 'start_call'; intent: string; purpose?: CallPurpose; partnerName?: string; voice?: SpeechVoice }
+  | {
+      type: 'start_call';
+      intent: string;
+      purpose?: CallPurpose;
+      partnerName?: string;
+      voice?: SpeechVoice;
+      userLanguage?: UserLanguage;
+    }
   | { type: 'join_call'; inviteCode: string }
   | { type: 'join_call'; seatToken: string }
   | { type: 'answer_call' }

@@ -31,6 +31,8 @@ import type {
 } from '../src/lib/callProtocol';
 import { DEFAULT_CALL_PURPOSE } from '../src/lib/callPurpose';
 import type { CallPurpose } from '../src/lib/callPurpose';
+import { DEFAULT_USER_LANGUAGE } from '../src/lib/userLanguage';
+import type { UserLanguage } from '../src/lib/userLanguage';
 import type { AiAssistant } from './geminiService';
 import { DISABLED_SYNTHESIZER } from './speechSynthesizer';
 import type { SpeechSynthesizer, SynthesisOutcome } from './speechSynthesizer';
@@ -41,6 +43,8 @@ export interface CallContext {
   partnerName: string;
   /** 読み上げの声。省くと既定の声。 */
   voice?: SpeechVoice;
+  /** 患者が選択した言語。省くと 'ja'。 */
+  userLanguage?: UserLanguage;
 }
 
 export const DEFAULT_CALL_CONTEXT: CallContext = { purpose: DEFAULT_CALL_PURPOSE, partnerName: '' };
@@ -319,6 +323,7 @@ export class CallRoom {
   private polishRequests = 0;
   private isClosed = false;
   private readonly voice: SpeechVoice;
+  private readonly userLanguage: UserLanguage;
   // 発言の番号ごとの音声。相手が再接続したら、ここから送り直す。通話を閉じたら消す。
   private speechAudio = new Map<number, TurnAudio>();
   // あいさつは本人が発信前に確認した文なので、相手が着信画面を開いた時点で作り始める。
@@ -336,6 +341,7 @@ export class CallRoom {
     this.purpose = context.purpose;
     this.partnerName = context.partnerName;
     this.voice = context.voice ?? DEFAULT_SPEECH_VOICE;
+    this.userLanguage = context.userLanguage ?? DEFAULT_USER_LANGUAGE;
     this.invite = { code: generateInviteCode(), expiresAt: Date.now() + inviteTtlMs };
     this.setTimer('invite', inviteTtlMs, () => this.close('invite_expired'));
     this.setTimer('lifetime', maxCallDurationMs, () => this.close('time_limit'));
@@ -540,7 +546,11 @@ export class CallRoom {
 
     if (this.isClosed || turn !== this.suggestionTurn) return;
     this.isGeneratingSuggestions = false;
-    this.suggestions = { suggestions: result.suggestions, ai: result.ai };
+    this.suggestions = {
+      suggestions: result.suggestions,
+      ...(result.partnerTranslation ? { partnerTranslation: result.partnerTranslation } : {}),
+      ai: result.ai,
+    };
     this.sendTo('patient', { type: 'suggestions', ...this.suggestions });
   }
 
@@ -629,6 +639,7 @@ export class CallRoom {
       requestId,
       original: result.original,
       polished: result.polished,
+      ...(result.englishNote ? { englishNote: result.englishNote } : {}),
       ai: result.ai,
     });
   }
@@ -726,6 +737,7 @@ export class CallRoom {
       phase: this.phase,
       purpose: this.purpose,
       partnerName: this.partnerName,
+      ...(forPatient && this.userLanguage !== DEFAULT_USER_LANGUAGE ? { userLanguage: this.userLanguage } : {}),
       turns: this.turns.map((turn) => ({ ...turn })),
       peerConnected: this.seats[otherRole(role)].peer !== null,
       isHospitalSpeaking: this.isHospitalRecording,
@@ -823,7 +835,12 @@ export class CallRoom {
   }
 
   private aiContext() {
-    return { intent: this.intent, purpose: this.purpose, partnerName: this.partnerName };
+    return {
+      intent: this.intent,
+      purpose: this.purpose,
+      partnerName: this.partnerName,
+      ...(this.userLanguage !== DEFAULT_USER_LANGUAGE ? { userLanguage: this.userLanguage } : {}),
+    };
   }
 
   /** AIには発言者と本文だけを渡す。 */

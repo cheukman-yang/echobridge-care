@@ -64,6 +64,19 @@ export function createPhraseId(): string {
 
 // --- 端末への保存（useSyncExternalStore 用） -------------------------------
 
+export const DEFAULT_CARE_CUSTOM_PHRASE_ID = 'care-default-preset-1';
+export const DEFAULT_CARE_CUSTOM_PHRASE_TEXT: Record<'ja' | 'en', string> = {
+  ja: '発話や聞き取りにサポートが必要なため、AI音声と画面表示でお話ししています。ゆっくりお話しいただけると助かります。',
+  en: 'I use AI voice and text support to communicate. Please speak slowly and clearly.',
+};
+
+const DEFAULT_CARE_PRESET_JA: CustomPhrase[] = [
+  { id: DEFAULT_CARE_CUSTOM_PHRASE_ID, text: DEFAULT_CARE_CUSTOM_PHRASE_TEXT.ja },
+];
+const DEFAULT_CARE_PRESET_EN: CustomPhrase[] = [
+  { id: DEFAULT_CARE_CUSTOM_PHRASE_ID, text: DEFAULT_CARE_CUSTOM_PHRASE_TEXT.en },
+];
+
 const EMPTY: CustomPhrase[] = [];
 const listeners = new Set<() => void>();
 /** 保存に失敗したとき（プライベートモードなど）の、この画面の中だけの値。 */
@@ -80,6 +93,14 @@ function readRaw(): string | null {
   }
 }
 
+/**
+ * localStorage にまだ登録文データが一度も保存されていない（null）初回アクセス状態か判定する。
+ * ユーザーが削除・全削除（空配列 '[]' 保存）や編集を行った後は false になる。
+ */
+export function isCustomPhrasesUninitialized(): boolean {
+  return readRaw() === null;
+}
+
 export function getCustomPhrasesSnapshot(): CustomPhrase[] {
   const raw = readRaw();
   if (raw !== lastRaw) {
@@ -87,6 +108,18 @@ export function getCustomPhrasesSnapshot(): CustomPhrase[] {
     lastValue = parseCustomPhrases(raw);
   }
   return lastValue;
+}
+
+/**
+ * EchoBridge Care 用の登録文リストを取得する。
+ * localStorage が null（初回アクセス時）の場合はアプリ言語に応じたデフォルト1件を自動プリセットし、
+ * ユーザーが削除・編集・全削除した場合はその保存内容（0件を含む）をそのまま尊重する。
+ */
+export function getCareCustomPhrasesSnapshot(userLanguage: 'ja' | 'en'): CustomPhrase[] {
+  if (!isCustomPhrasesUninitialized()) {
+    return getCustomPhrasesSnapshot();
+  }
+  return userLanguage === 'en' ? DEFAULT_CARE_PRESET_EN : DEFAULT_CARE_PRESET_JA;
 }
 
 /** サーバーでの描画と、読み込み直後の描画は空にする。保存した文は描画の後に出る。 */
@@ -125,6 +158,10 @@ export function saveCustomPhrases(phrases: readonly CustomPhrase[]): boolean {
 /** 端末からも、この画面の中からも消す。 */
 export function clearCustomPhrases(): void {
   memoryRaw = null;
+  lastRaw = undefined;
+  lastValue = EMPTY;
+  pendingDraftText = '';
+  pendingEditingId = null;
   try {
     window.localStorage.removeItem(CUSTOM_PHRASES_KEY);
   } catch {
@@ -132,3 +169,58 @@ export function clearCustomPhrases(): void {
   }
   listeners.forEach((listener) => listener());
 }
+
+// --- 未確定の登録文ドラフト自動確定（「通話開始 / 診察開始」押下時の取りこぼし防止） ---
+
+let pendingDraftText = '';
+let pendingEditingId: string | null = null;
+const draftResetListeners = new Set<() => void>();
+
+export function setPendingCustomPhraseDraft(
+  text: string,
+  editingId: string | null = null,
+): void {
+  pendingDraftText = text;
+  pendingEditingId = editingId;
+}
+
+export function subscribeCustomPhraseDraftReset(listener: () => void): () => void {
+  draftResetListeners.add(listener);
+  return () => {
+    draftResetListeners.delete(listener);
+  };
+}
+
+/**
+ * 登録文入力欄に未追加のテキストが残っている場合、自動的に確定してリスト（localStorage）へ反映する。
+ * 追加・更新が行われた場合は true を返す。
+ */
+export function commitPendingCustomPhrase(userLanguage?: 'ja' | 'en'): boolean {
+  const normalized = normalizePhraseText(pendingDraftText);
+  if (!normalized) {
+    pendingDraftText = '';
+    pendingEditingId = null;
+    return false;
+  }
+
+  const current = userLanguage
+    ? getCareCustomPhrasesSnapshot(userLanguage)
+    : getCustomPhrasesSnapshot();
+  const problem = validatePhrase(normalized, current, pendingEditingId);
+  const editingId = pendingEditingId;
+  pendingDraftText = '';
+  pendingEditingId = null;
+  draftResetListeners.forEach((listener) => listener());
+
+  if (problem !== null) {
+    // すでに同文が登録済み（duplicate）の場合はエラーにせず既存の登録文をそのまま活かす
+    return false;
+  }
+
+  const next = editingId
+    ? current.map((phrase) => (phrase.id === editingId ? { ...phrase, text: normalized } : phrase))
+    : [...current, { id: createPhraseId(), text: normalized }];
+  saveCustomPhrases(next);
+  return true;
+}
+
